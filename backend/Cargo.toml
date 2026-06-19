@@ -1,0 +1,15 @@
+[package]
+name = "megumi-backend"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.100"
+blake3 = "1.8.2"
+clap = { version = "4.5.53", features = ["derive"] }
+image = { version = "0.25.9", default-features = false, features = ["jpeg", "png"] }
+natord = "1.0.9"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
+time = { version = "0.3.44", features = ["formatting"] }
+webp = "0.3.1"

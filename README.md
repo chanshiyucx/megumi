@@ -50,3 +50,20 @@ Useful environment variables:
 - `MEGUMI_PROJECT_DIR`: project directory, defaults to `/Users/xin/Developer/shiyu/megumi`
 - `MEGUMI_R2_REMOTE`: rclone remote, defaults to `cf-r2:gallery`
 - `MEGUMI_RCLONE_LOG`: sync log file, defaults to `$HOME/megumi-r2-sync.log`
+
+## Frontend Reader
+
+The frontend is a standalone Next.js App Router app under `frontend/`. It
+currently hosts the migrated Eriri reader UI from
+`/Users/xin/Developer/shiyu/eriri/src` and preserves its original `/api/*`
+frontend boundary.
+
+```sh
+cd frontend
+pnpm install
+pnpm dev
+```
+
+The manifest/R2 adapter is intentionally separate from the UI migration work.
+For Vercel, use `frontend/` as the project root and `pnpm build` as the build
+command.

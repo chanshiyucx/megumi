@@ -177,7 +177,11 @@ export const useLibraryStore = create<LibraryState>()(
       })
 
       try {
-        await patchRemoteTags({ targetType: 'book', targetId: bookId, tags })
+        await patchRemoteTags({
+          targetType: 'book',
+          targetId: previous.title,
+          tags,
+        })
       } catch (error) {
         console.error(`Failed to update book tags for ${bookId}:`, error)
         set((state) => {
@@ -200,7 +204,11 @@ export const useLibraryStore = create<LibraryState>()(
       })
 
       try {
-        await patchRemoteTags({ targetType: 'comic', targetId: comicId, tags })
+        await patchRemoteTags({
+          targetType: 'comic',
+          targetId: previous.title,
+          tags,
+        })
       } catch (error) {
         console.error(`Failed to update comic tags for ${comicId}:`, error)
         set((state) => {
@@ -239,10 +247,11 @@ export const useLibraryStore = create<LibraryState>()(
       }
     },
     updateBookChapterTags: async (bookId, lineIndex, tags) => {
-      const previous = get().books[bookId]?.chapters.find(
+      const book = get().books[bookId]
+      const previous = book?.chapters.find(
         (chapter) => chapter.lineIndex === lineIndex,
       )
-      if (!previous) return
+      if (!book || !previous) return
       const rollback = { starred: previous.starred }
 
       set((state) => {
@@ -257,7 +266,7 @@ export const useLibraryStore = create<LibraryState>()(
       try {
         await patchRemoteTags({
           targetType: 'chapter',
-          targetId: chapterTagId(bookId, lineIndex),
+          targetId: chapterTagId(book.title, previous.title),
           tags,
         })
       } catch (error) {

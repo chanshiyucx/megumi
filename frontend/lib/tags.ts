@@ -42,8 +42,8 @@ function normalizeTags(value: unknown): RemoteTags {
   }
 }
 
-export function chapterTagId(bookId: string, lineIndex: number) {
-  return `${bookId}:${lineIndex}`
+export function chapterTagId(bookTitle: string, chapterTitle: string) {
+  return `${bookTitle}:${chapterTitle}`
 }
 
 export async function fetchRemoteTags(): Promise<RemoteTags> {

@@ -160,7 +160,7 @@ export async function fetchRemoteCatalog(): Promise<RemoteCatalog> {
         manifestUrl,
         publicBaseUrl: manifest.publicBaseUrl,
       }
-      const comicTags = tags.comics[sourceComic.id] ?? {}
+      const comicTags = tags.comics[sourceComic.title] ?? {}
       comics.push({
         id: sourceComic.id,
         title: sourceComic.title,
@@ -191,7 +191,7 @@ export async function fetchRemoteCatalog(): Promise<RemoteCatalog> {
       })
 
       for (const sourceBook of sourceAuthor.books) {
-        const bookTags = tags.books[sourceBook.id] ?? {}
+        const bookTags = tags.books[sourceBook.title] ?? {}
         books.push({
           id: sourceBook.id,
           title: sourceBook.title,
@@ -210,7 +210,7 @@ export async function fetchRemoteCatalog(): Promise<RemoteCatalog> {
           chapters: (sourceBook.chapters ?? []).map((chapter) => ({
             ...chapter,
             starred: Boolean(
-              tags.chapters[chapterTagId(sourceBook.id, chapter.lineIndex)]
+              tags.chapters[chapterTagId(sourceBook.title, chapter.title)]
                 ?.starred,
             ),
           })),

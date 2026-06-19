@@ -29,7 +29,6 @@ export interface Comic {
   libraryId: string
   starred: boolean
   deleted: boolean
-  pageCount?: number
   createdAt: number
 }
 

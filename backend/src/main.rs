@@ -82,7 +82,6 @@ enum LibraryKind {
 struct ComicSummaryManifest {
     title: String,
     cover_key: Option<String>,
-    page_count: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -371,7 +370,6 @@ fn scan_comic(
     }
 
     let cover_key = pages.first().map(|page| page.thumbnail_key.clone());
-    let page_count = pages.len();
     let detail_key = detail_manifest_key_for(&rel);
     let comic_state = ComicState {
         detail_key: detail_key.clone(),
@@ -396,11 +394,7 @@ fn scan_comic(
         )?;
     }
 
-    Ok(ComicSummaryManifest {
-        title,
-        cover_key,
-        page_count,
-    })
+    Ok(ComicSummaryManifest { title, cover_key })
 }
 
 fn scan_book_library(ctx: &mut BuildContext, library_dir: &Path) -> Result<Vec<AuthorManifest>> {
@@ -1255,6 +1249,7 @@ mod tests {
         .unwrap();
         assert_eq!(book_detail["schemaVersion"], 3);
         assert_eq!(book_detail["title"], "Two");
+        assert!(book_detail.get("mtimeMs").is_none());
         assert_eq!(book_detail["lineCount"], 4);
         assert!(book_detail.get("id").is_none());
         assert!(book_detail.get("path").is_none());

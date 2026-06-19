@@ -12,7 +12,6 @@ interface PageManifest {
 interface ComicSummaryManifest {
   title: string
   coverKey?: string
-  pageCount: number
 }
 
 interface ComicManifest {
@@ -174,7 +173,6 @@ export async function fetchRemoteCatalog(): Promise<RemoteCatalog> {
           libraryId,
           starred: Boolean(comicTags.starred),
           deleted: Boolean(comicTags.deleted),
-          pageCount: sourceComic.pageCount,
           createdAt: generatedAt,
         })
       }

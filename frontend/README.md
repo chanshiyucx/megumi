@@ -11,8 +11,10 @@ project:
 - `types`
 - `styles`
 
-The app loads a single remote `manifest.json` directly in the browser and reads
-comic images, thumbnails, and UTF-8 book files from the URLs it contains. Set
+The app loads the remote schema v2 `manifest.json` directly in the browser.
+Comic summaries and covers are available immediately; page metadata is fetched
+from `manifests/<comic-path>.json` when a comic is opened. Images, thumbnails,
+and UTF-8 book files are then read from their resolved object-storage URLs. Set
 `NEXT_PUBLIC_MEGUMI_MANIFEST_URL` at build time to select the catalog.
 
 The remote origin must return an `Access-Control-Allow-Origin` header that

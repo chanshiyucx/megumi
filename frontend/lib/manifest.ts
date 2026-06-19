@@ -1,22 +1,28 @@
 import type { Author, Book, Comic, Image, Library } from '@/types/library'
 
 interface PageManifest {
-  index: number
   filename: string
   key: string
-  url: string
   thumbnailKey: string
-  thumbnailUrl: string
   width: number
   height: number
   mtimeMs: number
+}
+
+interface ComicSummaryManifest {
+  id: string
+  title: string
+  path: string
+  coverThumbnailKey?: string
+  pageCount: number
+  createdAt: number
+  detailKey: string
 }
 
 interface ComicManifest {
   id: string
   title: string
   path: string
-  coverThumbnailKey?: string
   pageCount: number
   pages: PageManifest[]
 }
@@ -42,7 +48,7 @@ interface LibraryManifest {
   title: string
   kind: 'book' | 'comic'
   path: string
-  comics: ComicManifest[]
+  comics: ComicSummaryManifest[]
   authors: AuthorManifest[]
 }
 
@@ -57,7 +63,13 @@ export interface RemoteCatalog {
   comics: Comic[]
   authors: Author[]
   books: Book[]
-  comicImages: Record<string, Image[]>
+  comicSources: Record<string, RemoteComicSource>
+}
+
+export interface RemoteComicSource {
+  detailUrl: string
+  manifestUrl: string
+  publicBaseUrl?: string | null
 }
 
 function assetUrl(
@@ -70,6 +82,17 @@ function assetUrl(
     ? `${publicBaseUrl.replace(/\/$/, '')}/`
     : manifestUrl
   return new URL(url || key, base).toString()
+}
+
+function versionedAssetUrl(
+  manifestUrl: string,
+  publicBaseUrl: string | null | undefined,
+  key: string,
+  mtimeMs: number,
+) {
+  const url = new URL(assetUrl(manifestUrl, publicBaseUrl, undefined, key))
+  url.searchParams.set('v', String(mtimeMs))
+  return url.toString()
 }
 
 export async function fetchRemoteCatalog(): Promise<RemoteCatalog> {
@@ -89,7 +112,7 @@ export async function fetchRemoteCatalog(): Promise<RemoteCatalog> {
   const comics: Comic[] = []
   const authors: Author[] = []
   const books: Book[] = []
-  const comicImages: Record<string, Image[]> = {}
+  const comicSources: Record<string, RemoteComicSource> = {}
 
   manifest.libraries.forEach((sourceLibrary, sortOrder) => {
     libraries.push({
@@ -102,47 +125,33 @@ export async function fetchRemoteCatalog(): Promise<RemoteCatalog> {
     })
 
     for (const sourceComic of sourceLibrary.comics) {
-      const images = sourceComic.pages.map<Image>((page) => ({
-        path: page.key,
-        url: assetUrl(
+      comicSources[sourceComic.id] = {
+        detailUrl: assetUrl(
           manifestUrl,
           manifest.publicBaseUrl,
-          page.url,
-          page.key,
+          undefined,
+          sourceComic.detailKey,
         ),
-        thumbnail: assetUrl(
-          manifestUrl,
-          manifest.publicBaseUrl,
-          page.thumbnailUrl,
-          page.thumbnailKey,
-        ),
-        filename: page.filename,
-        starred: false,
-        deleted: false,
-        width: page.width,
-        height: page.height,
-        index: page.index,
-      }))
-      comicImages[sourceComic.id] = images
-
-      const firstPage = sourceComic.pages[0]
+        manifestUrl,
+        publicBaseUrl: manifest.publicBaseUrl,
+      }
       comics.push({
         id: sourceComic.id,
         title: sourceComic.title,
         path: sourceComic.path,
-        cover: firstPage
-          ? assetUrl(
+        cover: sourceComic.coverThumbnailKey
+          ? versionedAssetUrl(
               manifestUrl,
               manifest.publicBaseUrl,
-              firstPage.thumbnailUrl,
-              sourceComic.coverThumbnailKey || firstPage.thumbnailKey,
+              sourceComic.coverThumbnailKey,
+              sourceComic.createdAt,
             )
           : '',
         libraryId: sourceLibrary.id,
         starred: false,
         deleted: false,
         pageCount: sourceComic.pageCount,
-        createdAt: firstPage?.mtimeMs ?? generatedAt,
+        createdAt: sourceComic.createdAt || generatedAt,
       })
     }
 
@@ -176,5 +185,37 @@ export async function fetchRemoteCatalog(): Promise<RemoteCatalog> {
     }
   })
 
-  return { libraries, comics, authors, books, comicImages }
+  return { libraries, comics, authors, books, comicSources }
+}
+
+export async function fetchRemoteComicImages(
+  source: RemoteComicSource,
+): Promise<Image[]> {
+  const response = await fetch(source.detailUrl, { cache: 'no-store' })
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status} for ${source.detailUrl}`)
+  }
+
+  const comic = (await response.json()) as ComicManifest
+  return comic.pages.map<Image>((page, index) => ({
+    path: page.key,
+    url: versionedAssetUrl(
+      source.manifestUrl,
+      source.publicBaseUrl,
+      page.key,
+      page.mtimeMs,
+    ),
+    thumbnail: versionedAssetUrl(
+      source.manifestUrl,
+      source.publicBaseUrl,
+      page.thumbnailKey,
+      page.mtimeMs,
+    ),
+    filename: page.filename,
+    starred: false,
+    deleted: false,
+    width: page.width,
+    height: page.height,
+    index,
+  }))
 }

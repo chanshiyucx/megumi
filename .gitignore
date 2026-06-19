@@ -42,7 +42,6 @@ yarn-error.log*
 next-env.d.ts
 
 /docs/
-/target/
 /backend/target/
 /frontend/node_modules/
 /frontend/dist/

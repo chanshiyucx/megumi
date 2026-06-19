@@ -11,5 +11,5 @@ if [[ ! -f "$PROJECT_DIR/backend/Cargo.toml" ]]; then
   exit 1
 fi
 
-cd "$PROJECT_DIR"
-exec cargo run --manifest-path "$PROJECT_DIR/backend/Cargo.toml" --release -- build --source "$RESOURCE_DIR" "$@"
+cd "$PROJECT_DIR/backend"
+exec cargo run --release -- build --source "$RESOURCE_DIR" "$@"

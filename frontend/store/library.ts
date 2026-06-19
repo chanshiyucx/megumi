@@ -1,6 +1,11 @@
 import { create } from 'zustand'
 import { immer } from 'zustand/middleware/immer'
-import { fetchRemoteCatalog, type RemoteCatalog } from '@/lib/manifest'
+import {
+  fetchRemoteCatalog,
+  fetchRemoteComicImages,
+  type RemoteCatalog,
+  type RemoteComicSource,
+} from '@/lib/manifest'
 import { useUIStore } from '@/store/ui'
 import type {
   Author,
@@ -28,6 +33,7 @@ interface LibraryState {
   libraryAuthors: Record<string, string[]>
   authorBooks: Record<string, string[]>
   comicImages: Record<string, ComicImage>
+  comicSources: Record<string, RemoteComicSource>
   loadStatus: LoadStatus
   loadError?: string
   hydrate: () => Promise<void>
@@ -76,14 +82,14 @@ function buildMaps(catalog: RemoteCatalog) {
   for (const ids of Object.values(authorBooks))
     ids.sort((a, b) => collator.compare(books[a].title, books[b].title))
 
-  const timestamp = Date.now()
   const comicImages: Record<string, ComicImage> = {}
-  for (const [comicId, images] of Object.entries(catalog.comicImages)) {
+  for (const comic of catalog.comics) {
+    const comicId = comic.id
     comicImages[comicId] = {
       comicId,
-      status: images.length ? 'ready' : 'empty',
-      images,
-      timestamp,
+      status: 'idle',
+      images: [],
+      timestamp: 0,
     }
   }
 
@@ -96,6 +102,7 @@ function buildMaps(catalog: RemoteCatalog) {
     libraryAuthors,
     authorBooks,
     comicImages,
+    comicSources: catalog.comicSources,
   }
 }
 
@@ -109,6 +116,7 @@ export const useLibraryStore = create<LibraryState>()(
     libraryAuthors: {},
     authorBooks: {},
     comicImages: {},
+    comicSources: {},
     loadStatus: 'idle',
 
     hydrate: async () => {
@@ -148,11 +156,43 @@ export const useLibraryStore = create<LibraryState>()(
 
     getComicImages: async (comicId) => {
       const item = get().comicImages[comicId]
-      if (!item) return []
+      const source = get().comicSources[comicId]
+      if (!item || !source) return []
+      if (item.status === 'ready' || item.status === 'empty') {
+        set((state) => {
+          state.comicImages[comicId].timestamp = Date.now()
+        })
+        return item.images
+      }
+      if (item.status === 'loading') return []
+
       set((state) => {
+        state.comicImages[comicId].status = 'loading'
         state.comicImages[comicId].timestamp = Date.now()
+        delete state.comicImages[comicId].error
       })
-      return item.images
+      try {
+        const images = await fetchRemoteComicImages(source)
+        set((state) => {
+          const current = state.comicImages[comicId]
+          if (!current) return
+          current.status = images.length ? 'ready' : 'empty'
+          current.images = images
+          current.timestamp = Date.now()
+        })
+        return images
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        console.error(`Failed to fetch comic manifest for ${comicId}:`, error)
+        set((state) => {
+          const current = state.comicImages[comicId]
+          if (!current) return
+          current.status = 'failed'
+          current.error = message
+          current.timestamp = Date.now()
+        })
+        return []
+      }
     },
   })),
 )

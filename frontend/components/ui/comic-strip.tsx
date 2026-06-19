@@ -20,7 +20,7 @@ interface ComicStripProps {
   onCurrentIndexChange?: (index: number) => void
   onHover?: (index: number | null) => void
   onDoubleClick?: (index: number) => void
-  onTags: (id: string, filename: string, tags: FileTags) => Promise<void>
+  onTags: (id: string, imageKey: string, tags: FileTags) => Promise<void>
 }
 
 interface StripPageProps {
@@ -32,7 +32,7 @@ interface StripPageProps {
   height: number
   onHover?: (index: number | null) => void
   onDoubleClick?: (index: number) => void
-  onTags: (id: string, filename: string, tags: FileTags) => Promise<void>
+  onTags: (id: string, imageKey: string, tags: FileTags) => Promise<void>
 }
 
 const StripPage = memo(function StripPage({

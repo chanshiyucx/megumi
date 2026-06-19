@@ -145,7 +145,7 @@ export function useComicReadingSession({
 
     void updateComicImageTags(
       comic.id,
-      targetImage.filename,
+      targetImage.path,
       tagsFor(targetImage),
     )
   }

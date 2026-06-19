@@ -1,0 +1,76 @@
+import type { FileTags } from '@/types/library'
+
+export type TagTargetType = 'comic' | 'book' | 'image' | 'chapter'
+
+export interface RemoteTags {
+  version: 1
+  comics: Record<string, FileTags>
+  books: Record<string, FileTags>
+  images: Record<string, FileTags>
+  chapters: Record<string, FileTags>
+  updatedAt?: string
+}
+
+export interface PatchTagsRequest {
+  targetType: TagTargetType
+  targetId: string
+  tags: FileTags
+}
+
+const EMPTY_TAGS: RemoteTags = {
+  version: 1,
+  comics: {},
+  books: {},
+  images: {},
+  chapters: {},
+}
+
+function tagsApiUrl() {
+  return process.env.NEXT_PUBLIC_MEGUMI_TAGS_API_URL?.replace(/\/$/, '') ?? ''
+}
+
+function normalizeTags(value: unknown): RemoteTags {
+  if (!value || typeof value !== 'object') return EMPTY_TAGS
+  const source = value as Partial<RemoteTags>
+  return {
+    version: 1,
+    comics: source.comics ?? {},
+    books: source.books ?? {},
+    images: source.images ?? {},
+    chapters: source.chapters ?? {},
+    updatedAt: source.updatedAt,
+  }
+}
+
+export function chapterTagId(bookId: string, lineIndex: number) {
+  return `${bookId}:${lineIndex}`
+}
+
+export async function fetchRemoteTags(): Promise<RemoteTags> {
+  const baseUrl = tagsApiUrl()
+  if (!baseUrl) return EMPTY_TAGS
+
+  const response = await fetch(`${baseUrl}/tags`, { cache: 'no-store' })
+  if (response.status === 404) return EMPTY_TAGS
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status} for ${baseUrl}/tags`)
+  }
+
+  return normalizeTags(await response.json())
+}
+
+export async function patchRemoteTags(request: PatchTagsRequest): Promise<void> {
+  const baseUrl = tagsApiUrl()
+  if (!baseUrl) {
+    throw new Error('NEXT_PUBLIC_MEGUMI_TAGS_API_URL is not configured')
+  }
+
+  const response = await fetch(`${baseUrl}/tags`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  })
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status} for ${baseUrl}/tags`)
+  }
+}

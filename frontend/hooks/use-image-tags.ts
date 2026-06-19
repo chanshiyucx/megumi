@@ -1,7 +1,7 @@
 import { useTagReveal } from '@/hooks/use-tag-reveal'
 import type { FileTags, Image } from '@/types/library'
 
-type TagWriter = (id: string, filename: string, tags: FileTags) => Promise<void>
+type TagWriter = (id: string, imageKey: string, tags: FileTags) => Promise<void>
 
 /**
  * Tap-to-reveal tagging for a full-size page (preview + scroll strip): wires the
@@ -16,7 +16,7 @@ export function useImageTags(
 ) {
   const { ref, open, gestures, close } = useTagReveal(onDoubleTap)
   const setTag = (tags: FileTags) =>
-    void onTags?.(comicId, image.filename, tags)
+    void onTags?.(comicId, image.path, tags)
 
   return {
     ref,

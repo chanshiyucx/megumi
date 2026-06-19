@@ -6,6 +6,7 @@ import {
   type RemoteCatalog,
   type RemoteComicSource,
 } from '@/lib/manifest'
+import { chapterTagId, patchRemoteTags } from '@/lib/tags'
 import { useUIStore } from '@/store/ui'
 import type {
   Author,
@@ -45,9 +46,22 @@ interface LibraryState {
   updateComicTags: (comicId: string, tags: FileTags) => Promise<void>
   updateComicImageTags: (
     comicId: string,
-    filename: string,
+    imageKey: string,
     tags: FileTags,
   ) => Promise<void>
+  updateBookChapterTags: (
+    bookId: string,
+    lineIndex: number,
+    tags: FileTags,
+  ) => Promise<void>
+}
+
+function applyFileTags(
+  item: { starred: boolean; deleted: boolean },
+  tags: FileTags,
+) {
+  if (tags.starred !== undefined) item.starred = tags.starred
+  if (tags.deleted !== undefined) item.deleted = tags.deleted
 }
 
 function buildMaps(catalog: RemoteCatalog) {
@@ -146,13 +160,119 @@ export const useLibraryStore = create<LibraryState>()(
       }
     },
 
-    // Mutation entry points remain in the UI for the next data-layer phase.
     refreshLibrary: async () => {},
     removeLibrary: async () => {},
     reorderLibrary: () => {},
-    updateBookTags: async () => {},
-    updateComicTags: async () => {},
-    updateComicImageTags: async () => {},
+    updateBookTags: async (bookId, tags) => {
+      const previous = get().books[bookId]
+      if (!previous) return
+      const rollback = {
+        starred: previous.starred,
+        deleted: previous.deleted,
+      }
+
+      set((state) => {
+        const book = state.books[bookId]
+        if (book) applyFileTags(book, tags)
+      })
+
+      try {
+        await patchRemoteTags({ targetType: 'book', targetId: bookId, tags })
+      } catch (error) {
+        console.error(`Failed to update book tags for ${bookId}:`, error)
+        set((state) => {
+          const book = state.books[bookId]
+          if (book) applyFileTags(book, rollback)
+        })
+      }
+    },
+    updateComicTags: async (comicId, tags) => {
+      const previous = get().comics[comicId]
+      if (!previous) return
+      const rollback = {
+        starred: previous.starred,
+        deleted: previous.deleted,
+      }
+
+      set((state) => {
+        const comic = state.comics[comicId]
+        if (comic) applyFileTags(comic, tags)
+      })
+
+      try {
+        await patchRemoteTags({ targetType: 'comic', targetId: comicId, tags })
+      } catch (error) {
+        console.error(`Failed to update comic tags for ${comicId}:`, error)
+        set((state) => {
+          const comic = state.comics[comicId]
+          if (comic) applyFileTags(comic, rollback)
+        })
+      }
+    },
+    updateComicImageTags: async (comicId, imageKey, tags) => {
+      const previous = get().comicImages[comicId]?.images.find(
+        (image) => image.path === imageKey,
+      )
+      if (!previous) return
+      const rollback = {
+        starred: previous.starred,
+        deleted: previous.deleted,
+      }
+
+      set((state) => {
+        const image = state.comicImages[comicId]?.images.find(
+          (item) => item.path === imageKey,
+        )
+        if (image) applyFileTags(image, tags)
+      })
+
+      try {
+        await patchRemoteTags({ targetType: 'image', targetId: imageKey, tags })
+      } catch (error) {
+        console.error(`Failed to update image tags for ${imageKey}:`, error)
+        set((state) => {
+          const image = state.comicImages[comicId]?.images.find(
+            (item) => item.path === imageKey,
+          )
+          if (image) applyFileTags(image, rollback)
+        })
+      }
+    },
+    updateBookChapterTags: async (bookId, lineIndex, tags) => {
+      const previous = get().books[bookId]?.chapters.find(
+        (chapter) => chapter.lineIndex === lineIndex,
+      )
+      if (!previous) return
+      const rollback = { starred: previous.starred }
+
+      set((state) => {
+        const chapter = state.books[bookId]?.chapters.find(
+          (item) => item.lineIndex === lineIndex,
+        )
+        if (chapter && tags.starred !== undefined) {
+          chapter.starred = tags.starred
+        }
+      })
+
+      try {
+        await patchRemoteTags({
+          targetType: 'chapter',
+          targetId: chapterTagId(bookId, lineIndex),
+          tags,
+        })
+      } catch (error) {
+        console.error(
+          `Failed to update chapter tags for ${bookId}:${lineIndex}:`,
+          error,
+        )
+        set((state) => {
+          const chapter = state.books[bookId]?.chapters.find(
+            (item) => item.lineIndex === lineIndex,
+          )
+          if (chapter) chapter.starred = rollback.starred
+        })
+      }
+    },
 
     getComicImages: async (comicId) => {
       const item = get().comicImages[comicId]

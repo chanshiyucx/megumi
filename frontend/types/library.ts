@@ -52,11 +52,13 @@ export interface Book {
   deleted: boolean
   size: number
   createdAt: number
+  chapters: Chapter[]
 }
 
 export interface Chapter {
   title: string
   lineIndex: number
+  starred: boolean
 }
 
 export interface BookContent {

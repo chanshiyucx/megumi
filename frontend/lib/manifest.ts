@@ -1,4 +1,5 @@
 import type { Author, Book, Comic, Image, Library } from '@/types/library'
+import { chapterTagId, fetchRemoteTags, type RemoteTags } from '@/lib/tags'
 
 interface PageManifest {
   filename: string
@@ -34,6 +35,12 @@ interface BookManifest {
   url: string
   size: number
   mtimeMs: number
+  chapters?: ChapterManifest[]
+}
+
+interface ChapterManifest {
+  title: string
+  lineIndex: number
 }
 
 interface AuthorManifest {
@@ -95,13 +102,31 @@ function versionedAssetUrl(
   return url.toString()
 }
 
+async function fetchTagsOrEmpty(): Promise<RemoteTags> {
+  try {
+    return await fetchRemoteTags()
+  } catch (error) {
+    console.error('Failed to fetch tags:', error)
+    return {
+      version: 1,
+      comics: {},
+      books: {},
+      images: {},
+      chapters: {},
+    }
+  }
+}
+
 export async function fetchRemoteCatalog(): Promise<RemoteCatalog> {
   const manifestUrl = process.env.NEXT_PUBLIC_MEGUMI_MANIFEST_URL
   if (!manifestUrl) {
     throw new Error('NEXT_PUBLIC_MEGUMI_MANIFEST_URL is not configured')
   }
 
-  const response = await fetch(manifestUrl, { cache: 'no-store' })
+  const [response, tags] = await Promise.all([
+    fetch(manifestUrl, { cache: 'no-store' }),
+    fetchTagsOrEmpty(),
+  ])
   if (!response.ok) {
     throw new Error(`HTTP ${response.status} for ${manifestUrl}`)
   }
@@ -135,6 +160,7 @@ export async function fetchRemoteCatalog(): Promise<RemoteCatalog> {
         manifestUrl,
         publicBaseUrl: manifest.publicBaseUrl,
       }
+      const comicTags = tags.comics[sourceComic.id] ?? {}
       comics.push({
         id: sourceComic.id,
         title: sourceComic.title,
@@ -148,8 +174,8 @@ export async function fetchRemoteCatalog(): Promise<RemoteCatalog> {
             )
           : '',
         libraryId: sourceLibrary.id,
-        starred: false,
-        deleted: false,
+        starred: Boolean(comicTags.starred),
+        deleted: Boolean(comicTags.deleted),
         pageCount: sourceComic.pageCount,
         createdAt: sourceComic.createdAt || generatedAt,
       })
@@ -165,6 +191,7 @@ export async function fetchRemoteCatalog(): Promise<RemoteCatalog> {
       })
 
       for (const sourceBook of sourceAuthor.books) {
+        const bookTags = tags.books[sourceBook.id] ?? {}
         books.push({
           id: sourceBook.id,
           title: sourceBook.title,
@@ -176,10 +203,17 @@ export async function fetchRemoteCatalog(): Promise<RemoteCatalog> {
           ),
           authorId: sourceAuthor.id,
           libraryId: sourceLibrary.id,
-          starred: false,
-          deleted: false,
+          starred: Boolean(bookTags.starred),
+          deleted: Boolean(bookTags.deleted),
           size: sourceBook.size,
           createdAt: sourceBook.mtimeMs,
+          chapters: (sourceBook.chapters ?? []).map((chapter) => ({
+            ...chapter,
+            starred: Boolean(
+              tags.chapters[chapterTagId(sourceBook.id, chapter.lineIndex)]
+                ?.starred,
+            ),
+          })),
         })
       }
     }
@@ -191,7 +225,10 @@ export async function fetchRemoteCatalog(): Promise<RemoteCatalog> {
 export async function fetchRemoteComicImages(
   source: RemoteComicSource,
 ): Promise<Image[]> {
-  const response = await fetch(source.detailUrl, { cache: 'no-store' })
+  const [response, tags] = await Promise.all([
+    fetch(source.detailUrl, { cache: 'no-store' }),
+    fetchTagsOrEmpty(),
+  ])
   if (!response.ok) {
     throw new Error(`HTTP ${response.status} for ${source.detailUrl}`)
   }
@@ -212,8 +249,8 @@ export async function fetchRemoteComicImages(
       page.mtimeMs,
     ),
     filename: page.filename,
-    starred: false,
-    deleted: false,
+    starred: Boolean(tags.images[page.key]?.starred),
+    deleted: Boolean(tags.images[page.key]?.deleted),
     width: page.width,
     height: page.height,
     index,

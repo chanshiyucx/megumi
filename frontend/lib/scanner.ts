@@ -1,4 +1,4 @@
-import type { BookContent } from '@/types/library'
+import type { BookContent, Chapter } from '@/types/library'
 
 const SPECIAL_CHAPTERS = ['序章', '终章', '番外', '后记', '尾声']
 const CHAPTER_SUFFIXES = new Set(['章', '回', '节', '卷', '集', '幕'])
@@ -23,7 +23,7 @@ function parseBookText(text: string): BookContent {
   for (const sourceLine of text.replace(/^\uFEFF/, '').split(/\r?\n/)) {
     if (!sourceLine.trim()) continue
     const title = extractChapterTitle(sourceLine)
-    if (title) chapters.push({ title, lineIndex: lines.length })
+    if (title) chapters.push({ title, lineIndex: lines.length, starred: false })
     lines.push(sourceLine)
   }
 
@@ -33,6 +33,7 @@ function parseBookText(text: string): BookContent {
 export async function parseBook(
   url: string,
   onProgress?: (percent: number) => void,
+  chapters?: Chapter[],
 ): Promise<BookContent> {
   try {
     const res = await fetch(url, { cache: 'no-store' })
@@ -41,6 +42,7 @@ export async function parseBook(
     const total = Number(res.headers.get('content-length')) || 0
     if (!onProgress || !total || !res.body) {
       const result = parseBookText(await res.text())
+      if (chapters) result.chapters = chapters
       onProgress?.(100)
       return result
     }
@@ -59,6 +61,7 @@ export async function parseBook(
     text += decoder.decode()
 
     const result = parseBookText(text)
+    if (chapters) result.chapters = chapters
     onProgress(100)
     return result
   } catch (error) {

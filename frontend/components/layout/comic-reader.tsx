@@ -20,7 +20,7 @@ interface TableOfContentsProps {
   currentIndex: number
   isCollapsed: boolean
   onSelect: (index: number) => void
-  onTags: (id: string, filename: string, tags: FileTags) => Promise<void>
+  onTags: (id: string, imageKey: string, tags: FileTags) => Promise<void>
   onClose: () => void
 }
 

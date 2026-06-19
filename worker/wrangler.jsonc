@@ -1,0 +1,15 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "megumi-tags",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-06-19",
+  "r2_buckets": [
+    {
+      "binding": "MEGUMI_BUCKET",
+      "bucket_name": "megumi"
+    }
+  ],
+  "vars": {
+    "ALLOWED_ORIGINS": "http://localhost:3000,http://127.0.0.1:3000,http://10.27.1.24:3000"
+  }
+}

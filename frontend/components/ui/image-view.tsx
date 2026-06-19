@@ -12,7 +12,7 @@ const SWIPE_THRESHOLD = 50
 interface ImageProps {
   comicId: string
   image: Image
-  onTags?: (id: string, filename: string, tags: FileTags) => Promise<void>
+  onTags?: (id: string, imageKey: string, tags: FileTags) => Promise<void>
   onClick?: (index: number) => void
   onDoubleClick?: (index: number) => void
   isSelected?: boolean
@@ -48,13 +48,11 @@ export function GridImage({
       onDoubleClick={() => onDoubleClick?.(image.index)}
       onStar={
         onTags &&
-        (() =>
-          void onTags(comicId, image.filename, { starred: !image.starred }))
+        (() => void onTags(comicId, image.path, { starred: !image.starred }))
       }
       onDelete={
         onTags &&
-        (() =>
-          void onTags(comicId, image.filename, { deleted: !image.deleted }))
+        (() => void onTags(comicId, image.path, { deleted: !image.deleted }))
       }
     />
   )
@@ -236,7 +234,7 @@ interface ImagePreviewOverlayProps {
   onIndexChange: (index: number) => void
   // Double-tap / double-click anywhere closes the overlay.
   onClose: () => void
-  onTags: (id: string, filename: string, tags: FileTags) => Promise<void>
+  onTags: (id: string, imageKey: string, tags: FileTags) => Promise<void>
 }
 
 export function ImagePreviewOverlay({

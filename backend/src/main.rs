@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
+use std::fs::{self, File};
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -134,6 +135,14 @@ struct BookManifest {
     url: String,
     size: u64,
     mtime_ms: u64,
+    chapters: Vec<ChapterManifest>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ChapterManifest {
+    title: String,
+    line_index: usize,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -551,6 +560,7 @@ fn process_book(ctx: &mut BuildContext, source_path: &Path) -> Result<BookManife
         .and_then(|name| name.to_str())
         .unwrap_or(&filename)
         .to_string();
+    let chapters = scan_book_chapters(source_path)?;
     Ok(BookManifest {
         id: stable_id(&format!("book:{rel}")),
         title,
@@ -559,7 +569,89 @@ fn process_book(ctx: &mut BuildContext, source_path: &Path) -> Result<BookManife
         url: url_for(ctx, &key),
         size,
         mtime_ms,
+        chapters,
     })
+}
+
+fn scan_book_chapters(source_path: &Path) -> Result<Vec<ChapterManifest>> {
+    let file = File::open(source_path)
+        .with_context(|| format!("open book for chapter scan: {}", source_path.display()))?;
+    let reader = BufReader::new(file);
+    let mut line_index = 0;
+    let mut chapters = Vec::new();
+
+    for line in reader.lines() {
+        let line = line.with_context(|| format!("read book: {}", source_path.display()))?;
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        if let Some(title) = extract_chapter_title(&line) {
+            chapters.push(ChapterManifest { title, line_index });
+        }
+        line_index += 1;
+    }
+
+    Ok(chapters)
+}
+
+fn extract_chapter_title(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+
+    const SPECIAL_CHAPTERS: &[&str] = &["序章", "终章", "番外", "后记", "尾声"];
+    for &prefix in SPECIAL_CHAPTERS {
+        if trimmed.starts_with(prefix) {
+            return Some(trimmed.to_string());
+        }
+    }
+
+    if !trimmed.starts_with('第') {
+        return None;
+    }
+
+    let mut chars = trimmed.chars();
+    let _ = chars.next();
+    let mut has_number = false;
+    const CHAPTER_SUFFIXES: &[char] = &['章', '回', '节', '卷', '集', '幕'];
+
+    for c in chars {
+        if is_chapter_number_char(c) {
+            has_number = true;
+            continue;
+        }
+
+        return (has_number && CHAPTER_SUFFIXES.contains(&c)).then(|| trimmed.to_string());
+    }
+
+    None
+}
+
+fn is_chapter_number_char(c: char) -> bool {
+    c.is_ascii_digit()
+        || matches!(
+            c,
+            '０' | '１'
+                | '２'
+                | '３'
+                | '４'
+                | '５'
+                | '６'
+                | '７'
+                | '８'
+                | '９'
+                | '一'
+                | '二'
+                | '三'
+                | '四'
+                | '五'
+                | '六'
+                | '七'
+                | '八'
+                | '九'
+                | '十'
+                | '百'
+                | '千'
+        )
 }
 
 fn detect_library_kind(path: &Path) -> Result<LibraryKind> {
@@ -1077,7 +1169,7 @@ mod tests {
         let author = source.join("Books/Author");
         fs::create_dir_all(&author).unwrap();
         fs::write(author.join("One.txt"), "first").unwrap();
-        fs::write(author.join("Two.txt"), "second").unwrap();
+        fs::write(author.join("Two.txt"), "序章\nsecond\n\n第一章 开始\nbody").unwrap();
 
         build_test_library(source);
 
@@ -1166,6 +1258,10 @@ mod tests {
             .map(|book| book["title"].as_str().unwrap())
             .collect::<Vec<_>>();
         assert_eq!(titles, ["Three", "Two"]);
+        assert_eq!(books[1]["chapters"][0]["title"], "序章");
+        assert_eq!(books[1]["chapters"][0]["lineIndex"], 0);
+        assert_eq!(books[1]["chapters"][1]["title"], "第一章 开始");
+        assert_eq!(books[1]["chapters"][1]["lineIndex"], 2);
 
         let detail: serde_json::Value =
             serde_json::from_slice(&fs::read(source.join("manifests/Comics/Two.json")).unwrap())

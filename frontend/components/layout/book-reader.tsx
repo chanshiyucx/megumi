@@ -23,7 +23,6 @@ import { useTabsStore } from '@/store/tabs'
 import { LibraryType, type BookContent, type Chapter } from '@/types/library'
 
 const EMPTY_LINES: string[] = []
-const EMPTY_FAVORITES: number[] = []
 
 const ReaderPadding = {
   Header: () => <div className="h-16" />,
@@ -42,9 +41,8 @@ interface TableOfContentsProps {
   chapters: Chapter[]
   currentChapterTitle: string
   isCollapsed: boolean
-  favorites: number[]
   onSelect: (lineIndex: number) => void
-  onToggleFavorite: (lineIndex: number) => void
+  onToggleFavorite: (chapter: Chapter) => void
   onClose: () => void
 }
 
@@ -52,13 +50,11 @@ function TableOfContents({
   chapters,
   currentChapterTitle,
   isCollapsed,
-  favorites,
   onSelect,
   onToggleFavorite,
   onClose,
 }: TableOfContentsProps) {
   const tocRef = useRef<HTMLDivElement>(null)
-  const favoriteSet = new Set(favorites)
 
   useClickOutside(tocRef, onClose, !isCollapsed)
 
@@ -72,7 +68,7 @@ function TableOfContents({
     >
       <ScrollArea viewportClassName="h-full" className="pb-12">
         {chapters.map((chapter) => {
-          const isFavorite = favoriteSet.has(chapter.lineIndex)
+          const isFavorite = chapter.starred
           const isActiveLine = currentChapterTitle === chapter.title
           return (
             <div
@@ -101,7 +97,7 @@ function TableOfContents({
                 title="收藏章节"
                 onClick={(e) => {
                   e.stopPropagation()
-                  onToggleFavorite(chapter.lineIndex)
+                  onToggleFavorite(chapter)
                 }}
               >
                 <Star
@@ -138,22 +134,26 @@ export function BookReader({ bookId, showReading = false }: BookReaderProps) {
 
   const book = useLibraryStore((s) => s.books[bookId])
   const updateBookTags = useLibraryStore((s) => s.updateBookTags)
+  const updateBookChapterTags = useLibraryStore(
+    (s) => s.updateBookChapterTags,
+  )
   const activeTab = useTabsStore((s) => s.activeTab)
   const addTab = useTabsStore((s) => s.addTab)
   const setActiveTab = useTabsStore((s) => s.setActiveTab)
 
-  const content = bookData?.bookId === bookId ? bookData.content : null
+  const content =
+    bookData?.bookId === bookId
+      ? {
+          ...bookData.content,
+          chapters: book?.chapters ?? bookData.content.chapters,
+        }
+      : null
   const lines = content?.lines ?? EMPTY_LINES
 
   const updateBookProgress = useProgressStore((s) => s.updateBookProgress)
   const progress = useProgressStore((s) => s.books[bookId])
   const currentIndex = progress?.current ?? 0
   const currentChapterTitle = progress?.currentChapterTitle ?? ''
-
-  const toggleChapterFavorite = useProgressStore((s) => s.toggleChapterFavorite)
-  const favoriteChapters = useProgressStore(
-    (s) => s.favoriteChapters[bookId] ?? EMPTY_FAVORITES,
-  )
 
   const { isLock, lockScroll } = useScrollLock()
   const throttledUpdateProgress = useThrottledProgress(updateBookProgress)
@@ -293,10 +293,11 @@ export function BookReader({ bookId, showReading = false }: BookReaderProps) {
           chapters={content.chapters}
           currentChapterTitle={currentChapterTitle}
           isCollapsed={isTocCollapsed}
-          favorites={favoriteChapters}
           onSelect={jumpTo}
-          onToggleFavorite={(lineIndex) => {
-            toggleChapterFavorite(bookId, lineIndex)
+          onToggleFavorite={(chapter) => {
+            void updateBookChapterTags(bookId, chapter.lineIndex, {
+              starred: !chapter.starred,
+            })
           }}
           onClose={() => {
             setTocCollapsed(true)

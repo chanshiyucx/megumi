@@ -53,10 +53,9 @@ Useful environment variables:
 
 ## Frontend Reader
 
-The frontend is a standalone Next.js App Router app under `frontend/`. It
-currently hosts the migrated Eriri reader UI from
-`/Users/xin/Developer/shiyu/eriri/src` and preserves its original `/api/*`
-frontend boundary.
+The frontend is a standalone Next.js App Router app under `frontend/`. It hosts
+the migrated Eriri reader UI and loads the generated manifest and resources
+directly from remote object storage in the browser.
 
 ```sh
 cd frontend
@@ -64,6 +63,7 @@ pnpm install
 pnpm dev
 ```
 
-The manifest/R2 adapter is intentionally separate from the UI migration work.
-For Vercel, use `frontend/` as the project root and `pnpm build` as the build
-command.
+Set `NEXT_PUBLIC_MEGUMI_MANIFEST_URL` to the public manifest URL. The object
+storage origin must allow cross-origin `GET` requests from the deployed frontend
+origin. For Vercel, use `frontend/` as the project root and `pnpm build` as the
+build command.

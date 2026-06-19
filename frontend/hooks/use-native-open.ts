@@ -1,6 +1,5 @@
 import { type MouseEvent } from 'react'
 import { useIsPhone } from '@/hooks/use-is-phone'
-import { openPathNative } from '@/lib/scanner'
 
 /**
  * Right-click opens the item's folder/file in the OS file manager. Phones have
@@ -11,6 +10,6 @@ export function useNativeOpen(path: string) {
   if (isPhone) return undefined
   return (e: MouseEvent) => {
     e.preventDefault()
-    void openPathNative(path)
+    void path
   }
 }

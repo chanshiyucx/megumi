@@ -11,9 +11,13 @@ project:
 - `types`
 - `styles`
 
-The app currently keeps Eriri's original `/api/*` frontend boundary. Minimal
-empty API routes exist so the copied stores can hydrate without a backend while
-the manifest/R2 adapter is implemented separately.
+The app loads a single remote `manifest.json` directly in the browser and reads
+comic images, thumbnails, and UTF-8 book files from the URLs it contains. Set
+`NEXT_PUBLIC_MEGUMI_MANIFEST_URL` at build time to select the catalog.
+
+The remote origin must return an `Access-Control-Allow-Origin` header that
+permits the frontend origin. This applies to the manifest and UTF-8 book files;
+comic images use the same resolved object-storage base URL.
 
 ## Development
 

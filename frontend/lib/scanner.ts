@@ -1,27 +1,48 @@
-import { apiGet } from '@/lib/http'
-import type { BookContent, Image } from '@/types/library'
+import type { BookContent } from '@/types/library'
 
-const qs = (params: Record<string, string>): string =>
-  new URLSearchParams(params).toString()
+const SPECIAL_CHAPTERS = ['序章', '终章', '番外', '后记', '尾声']
+const CHAPTER_SUFFIXES = new Set(['章', '回', '节', '卷', '集', '幕'])
+const CHAPTER_NUMBERS = /^[0-9０-９一二三四五六七八九十百千]+/
 
-export async function scanComicImages(comicPath: string): Promise<Image[]> {
-  return apiGet<Image[]>(`/api/scan-comic-images?${qs({ path: comicPath })}`)
+function extractChapterTitle(line: string) {
+  const trimmed = line.trim()
+  if (SPECIAL_CHAPTERS.some((prefix) => trimmed.startsWith(prefix))) {
+    return trimmed
+  }
+  if (!trimmed.startsWith('第')) return null
+
+  const number = trimmed.slice(1).match(CHAPTER_NUMBERS)?.[0]
+  if (!number) return null
+  return CHAPTER_SUFFIXES.has(trimmed[1 + number.length]) ? trimmed : null
+}
+
+function parseBookText(text: string): BookContent {
+  const lines: string[] = []
+  const chapters: BookContent['chapters'] = []
+
+  for (const sourceLine of text.replace(/^\uFEFF/, '').split(/\r?\n/)) {
+    if (!sourceLine.trim()) continue
+    const title = extractChapterTitle(sourceLine)
+    if (title) chapters.push({ title, lineIndex: lines.length })
+    lines.push(sourceLine)
+  }
+
+  return { lines, chapters }
 }
 
 export async function parseBook(
-  path: string,
+  url: string,
   onProgress?: (percent: number) => void,
 ): Promise<BookContent> {
   try {
-    const res = await fetch(`/api/parse-book?${qs({ path })}`)
+    const res = await fetch(url, { cache: 'no-store' })
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
 
-    // `x-uncompressed-length` is the original (pre-gzip) byte count; the bytes
-    // we read below are already decompressed by the browser, so the ratio is
-    // accurate. Without it (or a callback), fall back to a plain parse.
-    const total = Number(res.headers.get('x-uncompressed-length')) || 0
+    const total = Number(res.headers.get('content-length')) || 0
     if (!onProgress || !total || !res.body) {
-      return (await res.json()) as BookContent
+      const result = parseBookText(await res.text())
+      onProgress?.(100)
+      return result
     }
 
     const reader = res.body.getReader()
@@ -37,43 +58,11 @@ export async function parseBook(
     }
     text += decoder.decode()
 
-    const result = JSON.parse(text) as BookContent
+    const result = parseBookText(text)
     onProgress(100)
     return result
   } catch (error) {
     console.error('Failed to parse book:', error)
     return { lines: [], chapters: [] }
-  }
-}
-
-export async function setFileTag(
-  path: string,
-  tags: { starred?: boolean; deleted?: boolean },
-): Promise<boolean> {
-  try {
-    const res = await fetch('/api/tag', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path, ...tags }),
-    })
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    return true
-  } catch (error) {
-    console.error('Failed to tag file:', error)
-    return false
-  }
-}
-
-/** Reveal a path in Finder on the Mac host. */
-export async function openPathNative(path: string): Promise<void> {
-  try {
-    const res = await fetch('/api/reveal', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path }),
-    })
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
-  } catch (error) {
-    console.error('Failed to open path:', error)
   }
 }

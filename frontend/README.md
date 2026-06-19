@@ -11,11 +11,12 @@ project:
 - `types`
 - `styles`
 
-The app loads the remote schema v2 `manifest.json` directly in the browser.
-Comic summaries and covers are available immediately; page metadata is fetched
-from `manifests/<comic-path>.json` when a comic is opened. Images, thumbnails,
-and UTF-8 book files are then read from their resolved object-storage URLs. Set
-`NEXT_PUBLIC_MEGUMI_MANIFEST_URL` at build time to select the catalog.
+The app loads the remote schema v3 `manifest.json` directly in the browser.
+Comic and book summaries are available immediately; comic page metadata and
+book chapter metadata are fetched from `manifests/<resource-path>.json` when
+opened. Images, thumbnails, and UTF-8 book files are then read from their
+resolved object-storage URLs. Set `NEXT_PUBLIC_MEGUMI_MANIFEST_URL` at build
+time to select the catalog.
 
 Star/delete state is read and written through the tags Worker. Set
 `NEXT_PUBLIC_MEGUMI_TAGS_API_URL` to the Worker origin, for example

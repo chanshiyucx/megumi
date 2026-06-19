@@ -137,6 +137,7 @@ export function BookReader({ bookId, showReading = false }: BookReaderProps) {
   const updateBookChapterTags = useLibraryStore(
     (s) => s.updateBookChapterTags,
   )
+  const getBookChapters = useLibraryStore((s) => s.getBookChapters)
   const activeTab = useTabsStore((s) => s.activeTab)
   const addTab = useTabsStore((s) => s.addTab)
   const setActiveTab = useTabsStore((s) => s.setActiveTab)
@@ -179,6 +180,8 @@ export function BookReader({ bookId, showReading = false }: BookReaderProps) {
 
   useEffect(() => {
     if (!book?.path) return
+    void getBookChapters(bookId)
+
     let cancelled = false
     const load = async () => {
       setIsLoading(true)
@@ -198,7 +201,7 @@ export function BookReader({ bookId, showReading = false }: BookReaderProps) {
     return () => {
       cancelled = true
     }
-  }, [bookId, book?.path])
+  }, [bookId, book?.path, getBookChapters])
 
   useLayoutEffect(() => {
     lockScroll()

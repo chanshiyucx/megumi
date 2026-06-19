@@ -12,7 +12,7 @@ const MANIFEST_FILE: &str = "manifest.json";
 const COMIC_MANIFEST_DIR: &str = "manifests";
 const STATE_FILE: &str = ".megumi/state.json";
 const THUMBNAIL_DIR: &str = "thumbnail";
-const SCHEMA_VERSION: u32 = 2;
+const SCHEMA_VERSION: u32 = 3;
 const STATE_VERSION: u32 = 2;
 const IMAGE_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png"];
 const BOOK_EXTENSIONS: &[&str] = &["txt"];
@@ -41,10 +41,6 @@ struct BuildArgs {
     #[arg(short, long)]
     output: Option<PathBuf>,
 
-    /// Optional public URL prefix used by manifest URL fields.
-    #[arg(long)]
-    public_base_url: Option<String>,
-
     /// Generated thumbnail width in pixels.
     #[arg(long, default_value_t = 256)]
     thumbnail_width: u32,
@@ -59,24 +55,23 @@ struct BuildArgs {
 struct Manifest {
     schema_version: u32,
     generated_at: String,
-    source_root: String,
-    public_base_url: Option<String>,
     libraries: Vec<LibraryManifest>,
 }
 
 #[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct LibraryManifest {
-    id: String,
-    title: String,
-    kind: LibraryKind,
-    path: String,
-    comics: Vec<ComicSummaryManifest>,
-    authors: Vec<AuthorManifest>,
+#[serde(tag = "kind", rename_all = "lowercase")]
+enum LibraryManifest {
+    Comic {
+        title: String,
+        comics: Vec<ComicSummaryManifest>,
+    },
+    Book {
+        title: String,
+        authors: Vec<AuthorManifest>,
+    },
 }
 
-#[derive(Debug, Serialize, Clone, Copy, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LibraryKind {
     Comic,
     Book,
@@ -85,30 +80,22 @@ enum LibraryKind {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ComicSummaryManifest {
-    id: String,
     title: String,
-    path: String,
-    cover_thumbnail_key: Option<String>,
+    cover_key: Option<String>,
     page_count: usize,
-    created_at: u64,
-    detail_key: String,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ComicManifest {
     schema_version: u32,
-    id: String,
     title: String,
-    path: String,
-    page_count: usize,
     pages: Vec<PageManifest>,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct PageManifest {
-    filename: String,
     key: String,
     thumbnail_key: String,
     width: u32,
@@ -119,22 +106,23 @@ struct PageManifest {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct AuthorManifest {
-    id: String,
     name: String,
-    path: String,
     books: Vec<BookManifest>,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct BookManifest {
-    id: String,
     title: String,
-    filename: String,
     key: String,
-    url: String,
-    size: u64,
-    mtime_ms: u64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BookDetailManifest {
+    schema_version: u32,
+    title: String,
+    line_count: usize,
     chapters: Vec<ChapterManifest>,
 }
 
@@ -150,7 +138,10 @@ struct ChapterManifest {
 struct BuildState {
     version: u32,
     files: BTreeMap<String, FileState>,
+    #[serde(default)]
     comics: BTreeMap<String, ComicState>,
+    #[serde(default)]
+    books: BTreeMap<String, BookState>,
 }
 
 impl Default for BuildState {
@@ -159,6 +150,7 @@ impl Default for BuildState {
             version: STATE_VERSION,
             files: BTreeMap::new(),
             comics: BTreeMap::new(),
+            books: BTreeMap::new(),
         }
     }
 }
@@ -181,6 +173,14 @@ struct FileState {
 struct ComicState {
     detail_key: String,
     fingerprint: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BookState {
+    detail_key: String,
+    size: u64,
+    mtime_ms: u64,
 }
 
 #[derive(Debug)]
@@ -239,7 +239,6 @@ impl Drop for StagingDir {
 struct BuildContext {
     source: PathBuf,
     output: PathBuf,
-    public_base_url: Option<String>,
     thumbnail_width: u32,
     thumbnail_quality: u8,
     previous_state: BuildState,
@@ -282,7 +281,6 @@ fn build(args: BuildArgs) -> Result<()> {
     let mut ctx = BuildContext {
         source: source.clone(),
         output: output.clone(),
-        public_base_url: args.public_base_url.map(trim_url_suffix),
         thumbnail_width: args.thumbnail_width,
         thumbnail_quality: args.thumbnail_quality,
         previous_state,
@@ -296,12 +294,6 @@ fn build(args: BuildArgs) -> Result<()> {
     let manifest = Manifest {
         schema_version: SCHEMA_VERSION,
         generated_at: now_rfc3339()?,
-        source_root: source
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("source")
-            .to_string(),
-        public_base_url: ctx.public_base_url.clone(),
         libraries,
     };
 
@@ -325,23 +317,19 @@ fn scan_libraries(ctx: &mut BuildContext) -> Result<Vec<LibraryManifest>> {
 
     let mut libraries = Vec::new();
     for library_dir in library_dirs {
-        let rel = relative_key(&ctx.source, &library_dir)?;
         let kind = detect_library_kind(&library_dir)?;
         let title = display_name(&library_dir);
-        let id = stable_id(&format!("library:{rel}"));
-        let (comics, authors) = match kind {
-            LibraryKind::Comic => (scan_comic_library(ctx, &library_dir)?, Vec::new()),
-            LibraryKind::Book => (Vec::new(), scan_book_library(ctx, &library_dir)?),
+        let library = match kind {
+            LibraryKind::Comic => LibraryManifest::Comic {
+                title,
+                comics: scan_comic_library(ctx, &library_dir)?,
+            },
+            LibraryKind::Book => LibraryManifest::Book {
+                title,
+                authors: scan_book_library(ctx, &library_dir)?,
+            },
         };
-
-        libraries.push(LibraryManifest {
-            id,
-            title,
-            kind,
-            path: rel,
-            comics,
-            authors,
-        });
+        libraries.push(library);
     }
     Ok(libraries)
 }
@@ -375,7 +363,6 @@ fn scan_comic(
 ) -> Result<ComicSummaryManifest> {
     image_paths.sort_by(|a, b| natord::compare(&display_name(a), &display_name(b)));
     let rel = relative_key(&ctx.source, comic_dir)?;
-    let id = stable_id(&format!("comic:{rel}"));
     let title = display_name(comic_dir);
 
     let mut pages = Vec::with_capacity(image_paths.len());
@@ -383,10 +370,9 @@ fn scan_comic(
         pages.push(process_image(ctx, &image_path)?);
     }
 
-    let cover_thumbnail_key = pages.first().map(|page| page.thumbnail_key.clone());
-    let created_at = pages.first().map(|page| page.mtime_ms).unwrap_or_default();
+    let cover_key = pages.first().map(|page| page.thumbnail_key.clone());
     let page_count = pages.len();
-    let detail_key = comic_manifest_key_for(&rel);
+    let detail_key = detail_manifest_key_for(&rel);
     let comic_state = ComicState {
         detail_key: detail_key.clone(),
         fingerprint: comic_fingerprint(&pages, &ctx.next_state.files)?,
@@ -398,10 +384,7 @@ fn scan_comic(
     if !detail_unchanged {
         let manifest = ComicManifest {
             schema_version: SCHEMA_VERSION,
-            id: id.clone(),
             title: title.clone(),
-            path: rel.clone(),
-            page_count,
             pages,
         };
         stage_json_output(
@@ -414,13 +397,9 @@ fn scan_comic(
     }
 
     Ok(ComicSummaryManifest {
-        id,
         title,
-        path: rel,
-        cover_thumbnail_key,
+        cover_key,
         page_count,
-        created_at,
-        detail_key,
     })
 }
 
@@ -449,8 +428,6 @@ fn scan_author(
     mut book_paths: Vec<PathBuf>,
 ) -> Result<AuthorManifest> {
     book_paths.sort_by(|a, b| natord::compare(&display_name(a), &display_name(b)));
-    let rel = relative_key(&ctx.source, author_dir)?;
-    let id = stable_id(&format!("author:{rel}"));
     let name = display_name(author_dir);
 
     let mut books = Vec::with_capacity(book_paths.len());
@@ -458,12 +435,7 @@ fn scan_author(
         books.push(process_book(ctx, &book_path)?);
     }
 
-    Ok(AuthorManifest {
-        id,
-        name,
-        path: rel,
-        books,
-    })
+    Ok(AuthorManifest { name, books })
 }
 
 fn process_image(ctx: &mut BuildContext, source_path: &Path) -> Result<PageManifest> {
@@ -516,13 +488,7 @@ fn process_image(ctx: &mut BuildContext, source_path: &Path) -> Result<PageManif
         },
     );
 
-    let filename = source_path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or_default()
-        .to_string();
     Ok(PageManifest {
-        filename,
         key: key.clone(),
         thumbnail_key: thumbnail_key.clone(),
         width,
@@ -539,6 +505,16 @@ fn process_book(ctx: &mut BuildContext, source_path: &Path) -> Result<BookManife
     let size = metadata.len();
     let mtime_ms = modified_ms(&metadata)?;
     let key = rel.clone();
+    let detail_key = detail_manifest_key_for(&strip_extension(&rel));
+    let book_state = BookState {
+        detail_key: detail_key.clone(),
+        size,
+        mtime_ms,
+    };
+    let detail_unchanged = ctx.previous_state.books.get(&rel) == Some(&book_state)
+        && ctx.output.join(&detail_key).is_file();
+    ctx.next_state.books.insert(rel.clone(), book_state);
+
     ctx.next_state.files.insert(
         rel.clone(),
         FileState {
@@ -560,20 +536,33 @@ fn process_book(ctx: &mut BuildContext, source_path: &Path) -> Result<BookManife
         .and_then(|name| name.to_str())
         .unwrap_or(&filename)
         .to_string();
-    let chapters = scan_book_chapters(source_path)?;
-    Ok(BookManifest {
-        id: stable_id(&format!("book:{rel}")),
-        title,
-        filename,
-        key: key.clone(),
-        url: url_for(ctx, &key),
-        size,
-        mtime_ms,
-        chapters,
-    })
+
+    if !detail_unchanged {
+        let content = scan_book_chapters(source_path)?;
+        let manifest = BookDetailManifest {
+            schema_version: SCHEMA_VERSION,
+            title: title.clone(),
+            line_count: content.line_count,
+            chapters: content.chapters,
+        };
+        stage_json_output(
+            &ctx.staging,
+            &ctx.output,
+            &detail_key,
+            &manifest,
+            &mut ctx.pending_comic_manifests,
+        )?;
+    }
+
+    Ok(BookManifest { title, key })
 }
 
-fn scan_book_chapters(source_path: &Path) -> Result<Vec<ChapterManifest>> {
+struct BookChapterScan {
+    line_count: usize,
+    chapters: Vec<ChapterManifest>,
+}
+
+fn scan_book_chapters(source_path: &Path) -> Result<BookChapterScan> {
     let file = File::open(source_path)
         .with_context(|| format!("open book for chapter scan: {}", source_path.display()))?;
     let reader = BufReader::new(file);
@@ -592,7 +581,10 @@ fn scan_book_chapters(source_path: &Path) -> Result<Vec<ChapterManifest>> {
         line_index += 1;
     }
 
-    Ok(chapters)
+    Ok(BookChapterScan {
+        line_count: line_index,
+        chapters,
+    })
 }
 
 fn extract_chapter_title(line: &str) -> Option<String> {
@@ -903,12 +895,30 @@ fn cleanup_removed_outputs(ctx: &BuildContext) -> Result<()> {
         .comics
         .values()
         .map(|state| state.detail_key.as_str())
+        .chain(
+            ctx.next_state
+                .books
+                .values()
+                .map(|state| state.detail_key.as_str()),
+        )
         .collect();
     for (comic_path, previous) in &ctx.previous_state.comics {
         let current_key = ctx
             .next_state
             .comics
             .get(comic_path)
+            .map(|state| state.detail_key.as_str());
+        if current_key != Some(previous.detail_key.as_str())
+            && !current_manifests.contains(previous.detail_key.as_str())
+        {
+            remove_generated_file(&ctx.output, &previous.detail_key)?;
+        }
+    }
+    for (book_path, previous) in &ctx.previous_state.books {
+        let current_key = ctx
+            .next_state
+            .books
+            .get(book_path)
             .map(|state| state.detail_key.as_str());
         if current_key != Some(previous.detail_key.as_str())
             && !current_manifests.contains(previous.detail_key.as_str())
@@ -1014,10 +1024,6 @@ fn modified_ms(metadata: &fs::Metadata) -> Result<u64> {
         .unwrap_or(u64::MAX))
 }
 
-fn stable_id(input: &str) -> String {
-    blake3::hash(input.as_bytes()).to_hex()[..16].to_string()
-}
-
 fn thumbnail_key_for(rel: &str) -> String {
     let mut path = PathBuf::from(THUMBNAIL_DIR);
     path.push(rel);
@@ -1025,36 +1031,16 @@ fn thumbnail_key_for(rel: &str) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
 
-fn comic_manifest_key_for(rel: &str) -> String {
+fn detail_manifest_key_for(rel: &str) -> String {
     format!("{COMIC_MANIFEST_DIR}/{rel}.json")
 }
 
-fn url_for(ctx: &BuildContext, key: &str) -> String {
-    let encoded = percent_encode_key(key);
-    match &ctx.public_base_url {
-        Some(base) => format!("{base}/{encoded}"),
-        None => encoded,
-    }
-}
-
-fn trim_url_suffix(mut value: String) -> String {
-    while value.ends_with('/') {
-        value.pop();
-    }
-    value
-}
-
-fn percent_encode_key(key: &str) -> String {
-    let mut encoded = String::new();
-    for byte in key.bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => {
-                encoded.push(byte as char)
-            }
-            _ => encoded.push_str(&format!("%{byte:02X}")),
-        }
-    }
-    encoded
+fn strip_extension(key: &str) -> String {
+    let mut path = PathBuf::from(key);
+    path.set_extension("");
+    path.to_string_lossy()
+        .trim_end_matches('.')
+        .replace('\\', "/")
 }
 
 fn now_rfc3339() -> Result<String> {
@@ -1072,20 +1058,24 @@ fn now_rfc3339() -> Result<String> {
 mod tests {
     use super::*;
     use image::{Rgb, RgbImage};
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::thread;
     use std::time::Duration;
+
+    static TEST_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     struct TestDir(PathBuf);
 
     impl TestDir {
         fn new() -> Self {
             let unique = format!(
-                "megumi-test-{}-{}",
+                "megumi-test-{}-{}-{}",
                 std::process::id(),
                 SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .unwrap_or_default()
-                    .as_nanos()
+                    .as_nanos(),
+                TEST_DIR_COUNTER.fetch_add(1, Ordering::Relaxed)
             );
             let path = std::env::temp_dir().join(unique);
             fs::create_dir_all(&path).unwrap();
@@ -1103,7 +1093,6 @@ mod tests {
         BuildArgs {
             source: source.to_path_buf(),
             output: None,
-            public_base_url: None,
             thumbnail_width: 16,
             thumbnail_quality: 72,
         }
@@ -1119,29 +1108,6 @@ mod tests {
     }
 
     #[test]
-    fn ids_are_stable_and_short() {
-        assert_eq!(stable_id("comic:a"), stable_id("comic:a"));
-        assert_ne!(stable_id("comic:a"), stable_id("comic:b"));
-        assert_eq!(stable_id("comic:a").len(), 16);
-    }
-
-    #[test]
-    fn trims_public_base_url_suffix() {
-        assert_eq!(
-            trim_url_suffix("https://cdn.example.com///".to_string()),
-            "https://cdn.example.com"
-        );
-    }
-
-    #[test]
-    fn percent_encodes_url_keys_without_escaping_slashes() {
-        assert_eq!(
-            percent_encode_key("作者/Book One.txt"),
-            "%E4%BD%9C%E8%80%85/Book%20One.txt"
-        );
-    }
-
-    #[test]
     fn thumbnail_keys_keep_original_directory_and_use_webp() {
         assert_eq!(
             thumbnail_key_for("Comics/ComicA/001.jpg"),
@@ -1152,8 +1118,12 @@ mod tests {
     #[test]
     fn comic_manifest_keys_append_json_without_replacing_extensions() {
         assert_eq!(
-            comic_manifest_key_for("Comics/Comic.v1"),
+            detail_manifest_key_for("Comics/Comic.v1"),
             "manifests/Comics/Comic.v1.json"
+        );
+        assert_eq!(
+            detail_manifest_key_for(&strip_extension("Books/Author/Book.v1.txt")),
+            "manifests/Books/Author/Book.v1.json"
         );
     }
 
@@ -1225,7 +1195,7 @@ mod tests {
         build_test_library(source);
         let reduced_detail: serde_json::Value =
             serde_json::from_slice(&fs::read(&comic_manifest).unwrap()).unwrap();
-        assert_eq!(reduced_detail["pageCount"], 1);
+        assert_eq!(reduced_detail["pages"].as_array().unwrap().len(), 1);
         assert!(!second_thumbnail.exists());
 
         fs::rename(source.join("Comics/One"), source.join("Comics/Two")).unwrap();
@@ -1240,36 +1210,71 @@ mod tests {
 
         let manifest: serde_json::Value =
             serde_json::from_slice(&fs::read(root_manifest).unwrap()).unwrap();
-        assert_eq!(manifest["schemaVersion"], 2);
+        assert_eq!(manifest["schemaVersion"], 3);
+        assert!(manifest.get("sourceRoot").is_none());
+        assert!(manifest.get("publicBaseUrl").is_none());
         let libraries = manifest["libraries"].as_array().unwrap();
         let comics = libraries
             .iter()
             .find(|library| library["kind"] == "comic")
             .unwrap();
         assert_eq!(comics["comics"][0]["title"], "Two");
+        assert!(comics.get("authors").is_none());
+        assert!(comics.get("path").is_none());
+        assert!(comics.get("id").is_none());
+        assert!(comics["comics"][0].get("id").is_none());
+        assert!(comics["comics"][0].get("path").is_none());
+        assert!(comics["comics"][0].get("createdAt").is_none());
+        assert!(comics["comics"][0].get("detailKey").is_none());
+        assert!(comics["comics"][0].get("coverThumbnailKey").is_none());
+        assert!(comics["comics"][0].get("coverKey").is_some());
         let books = libraries
             .iter()
             .find(|library| library["kind"] == "book")
-            .unwrap()["authors"][0]["books"]
-            .as_array()
             .unwrap();
+        assert!(books.get("comics").is_none());
+        assert!(books.get("path").is_none());
+        assert!(books.get("id").is_none());
+        let books = books["authors"][0]["books"].as_array().unwrap();
         let titles = books
             .iter()
             .map(|book| book["title"].as_str().unwrap())
             .collect::<Vec<_>>();
         assert_eq!(titles, ["Three", "Two"]);
-        assert_eq!(books[1]["chapters"][0]["title"], "序章");
-        assert_eq!(books[1]["chapters"][0]["lineIndex"], 0);
-        assert_eq!(books[1]["chapters"][1]["title"], "第一章 开始");
-        assert_eq!(books[1]["chapters"][1]["lineIndex"], 2);
+        assert_eq!(books[1]["key"], "Books/Author/Two.txt");
+        assert!(books[1].get("id").is_none());
+        assert!(books[1].get("url").is_none());
+        assert!(books[1].get("size").is_none());
+        assert!(books[1].get("mtimeMs").is_none());
+        assert!(books[1].get("chapters").is_none());
+        assert!(books[1].get("detailKey").is_none());
+
+        let book_detail: serde_json::Value = serde_json::from_slice(
+            &fs::read(source.join("manifests/Books/Author/Two.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(book_detail["schemaVersion"], 3);
+        assert_eq!(book_detail["title"], "Two");
+        assert_eq!(book_detail["lineCount"], 4);
+        assert!(book_detail.get("id").is_none());
+        assert!(book_detail.get("path").is_none());
+        assert!(book_detail.get("key").is_none());
+        assert_eq!(book_detail["chapters"][0]["title"], "序章");
+        assert_eq!(book_detail["chapters"][0]["lineIndex"], 0);
+        assert_eq!(book_detail["chapters"][1]["title"], "第一章 开始");
+        assert_eq!(book_detail["chapters"][1]["lineIndex"], 2);
 
         let detail: serde_json::Value =
             serde_json::from_slice(&fs::read(source.join("manifests/Comics/Two.json")).unwrap())
                 .unwrap();
-        assert_eq!(detail["schemaVersion"], 2);
-        assert_eq!(detail["pageCount"], 1);
+        assert_eq!(detail["schemaVersion"], 3);
+        assert_eq!(detail["title"], "Two");
+        assert!(detail.get("id").is_none());
+        assert!(detail.get("path").is_none());
+        assert!(detail.get("pageCount").is_none());
         assert!(detail["pages"][0].get("url").is_none());
         assert!(detail["pages"][0].get("index").is_none());
+        assert!(detail["pages"][0].get("filename").is_none());
     }
 
     #[test]

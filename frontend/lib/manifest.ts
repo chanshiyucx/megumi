@@ -2,7 +2,6 @@ import type { Author, Book, Comic, Image, Library } from '@/types/library'
 import { chapterTagId, fetchRemoteTags, type RemoteTags } from '@/lib/tags'
 
 interface PageManifest {
-  filename: string
   key: string
   thumbnailKey: string
   width: number
@@ -11,31 +10,19 @@ interface PageManifest {
 }
 
 interface ComicSummaryManifest {
-  id: string
   title: string
-  path: string
-  coverThumbnailKey?: string
+  coverKey?: string
   pageCount: number
-  createdAt: number
-  detailKey: string
 }
 
 interface ComicManifest {
-  id: string
   title: string
-  path: string
-  pageCount: number
   pages: PageManifest[]
 }
 
 interface BookManifest {
-  id: string
   title: string
   key: string
-  url: string
-  size: number
-  mtimeMs: number
-  chapters?: ChapterManifest[]
 }
 
 interface ChapterManifest {
@@ -43,25 +30,32 @@ interface ChapterManifest {
   lineIndex: number
 }
 
+interface BookDetailManifest {
+  title: string
+  lineCount: number
+  chapters: ChapterManifest[]
+}
+
 interface AuthorManifest {
-  id: string
   name: string
-  path: string
   books: BookManifest[]
 }
 
-interface LibraryManifest {
-  id: string
-  title: string
-  kind: 'book' | 'comic'
-  path: string
-  comics: ComicSummaryManifest[]
-  authors: AuthorManifest[]
-}
+type LibraryManifest =
+  | {
+      kind: 'comic'
+      title: string
+      comics: ComicSummaryManifest[]
+    }
+  | {
+      kind: 'book'
+      title: string
+      authors: AuthorManifest[]
+    }
 
 interface Manifest {
+  schemaVersion: 3
   generatedAt: string
-  publicBaseUrl?: string | null
   libraries: LibraryManifest[]
 }
 
@@ -71,35 +65,46 @@ export interface RemoteCatalog {
   authors: Author[]
   books: Book[]
   comicSources: Record<string, RemoteComicSource>
+  bookSources: Record<string, RemoteBookSource>
 }
 
 export interface RemoteComicSource {
   detailUrl: string
   manifestUrl: string
-  publicBaseUrl?: string | null
+}
+
+export interface RemoteBookSource {
+  detailUrl: string
+  title: string
 }
 
 function assetUrl(
   manifestUrl: string,
-  publicBaseUrl: string | null | undefined,
-  url: string | undefined,
   key: string,
 ) {
-  const base = publicBaseUrl
-    ? `${publicBaseUrl.replace(/\/$/, '')}/`
-    : manifestUrl
-  return new URL(url || key, base).toString()
+  return new URL(key, manifestUrl).toString()
 }
 
 function versionedAssetUrl(
   manifestUrl: string,
-  publicBaseUrl: string | null | undefined,
   key: string,
   mtimeMs: number,
 ) {
-  const url = new URL(assetUrl(manifestUrl, publicBaseUrl, undefined, key))
+  const url = new URL(assetUrl(manifestUrl, key))
   url.searchParams.set('v', String(mtimeMs))
   return url.toString()
+}
+
+function detailKeyFor(path: string) {
+  return `manifests/${stripExtension(path)}.json`
+}
+
+function stripExtension(path: string) {
+  return path.replace(/\.[^/.]+$/, '')
+}
+
+function filenameFromKey(key: string) {
+  return key.split('/').pop() ?? key
 }
 
 async function fetchTagsOrEmpty(): Promise<RemoteTags> {
@@ -138,88 +143,98 @@ export async function fetchRemoteCatalog(): Promise<RemoteCatalog> {
   const authors: Author[] = []
   const books: Book[] = []
   const comicSources: Record<string, RemoteComicSource> = {}
+  const bookSources: Record<string, RemoteBookSource> = {}
 
   manifest.libraries.forEach((sourceLibrary, sortOrder) => {
+    const libraryId = sourceLibrary.title
     libraries.push({
-      id: sourceLibrary.id,
+      id: libraryId,
       name: sourceLibrary.title,
-      path: sourceLibrary.path,
+      path: sourceLibrary.title,
       type: sourceLibrary.kind,
       createdAt: generatedAt,
       sortOrder,
     })
 
-    for (const sourceComic of sourceLibrary.comics) {
-      comicSources[sourceComic.id] = {
-        detailUrl: assetUrl(
+    if (sourceLibrary.kind === 'comic') {
+      for (const sourceComic of sourceLibrary.comics) {
+        const comicId = `${libraryId}/${sourceComic.title}`
+        comicSources[comicId] = {
+          detailUrl: assetUrl(manifestUrl, detailKeyFor(comicId)),
           manifestUrl,
-          manifest.publicBaseUrl,
-          undefined,
-          sourceComic.detailKey,
-        ),
-        manifestUrl,
-        publicBaseUrl: manifest.publicBaseUrl,
+        }
+        const comicTags = tags.comics[sourceComic.title] ?? {}
+        comics.push({
+          id: comicId,
+          title: sourceComic.title,
+          path: comicId,
+          cover: sourceComic.coverKey
+            ? assetUrl(manifestUrl, sourceComic.coverKey)
+            : '',
+          libraryId,
+          starred: Boolean(comicTags.starred),
+          deleted: Boolean(comicTags.deleted),
+          pageCount: sourceComic.pageCount,
+          createdAt: generatedAt,
+        })
       }
-      const comicTags = tags.comics[sourceComic.title] ?? {}
-      comics.push({
-        id: sourceComic.id,
-        title: sourceComic.title,
-        path: sourceComic.path,
-        cover: sourceComic.coverThumbnailKey
-          ? versionedAssetUrl(
-              manifestUrl,
-              manifest.publicBaseUrl,
-              sourceComic.coverThumbnailKey,
-              sourceComic.createdAt,
-            )
-          : '',
-        libraryId: sourceLibrary.id,
-        starred: Boolean(comicTags.starred),
-        deleted: Boolean(comicTags.deleted),
-        pageCount: sourceComic.pageCount,
-        createdAt: sourceComic.createdAt || generatedAt,
-      })
+      return
     }
 
     for (const sourceAuthor of sourceLibrary.authors) {
+      const authorId = `${libraryId}/${sourceAuthor.name}`
       authors.push({
-        id: sourceAuthor.id,
+        id: authorId,
         name: sourceAuthor.name,
-        path: sourceAuthor.path,
-        libraryId: sourceLibrary.id,
+        path: authorId,
+        libraryId,
         bookCount: sourceAuthor.books.length,
       })
 
       for (const sourceBook of sourceAuthor.books) {
+        const bookId = stripExtension(sourceBook.key)
         const bookTags = tags.books[sourceBook.title] ?? {}
-        books.push({
-          id: sourceBook.id,
+        bookSources[bookId] = {
+          detailUrl: assetUrl(manifestUrl, detailKeyFor(bookId)),
           title: sourceBook.title,
-          path: assetUrl(
-            manifestUrl,
-            manifest.publicBaseUrl,
-            sourceBook.url,
-            sourceBook.key,
-          ),
-          authorId: sourceAuthor.id,
-          libraryId: sourceLibrary.id,
+        }
+        books.push({
+          id: bookId,
+          title: sourceBook.title,
+          path: assetUrl(manifestUrl, sourceBook.key),
+          authorId,
+          libraryId,
           starred: Boolean(bookTags.starred),
           deleted: Boolean(bookTags.deleted),
-          size: sourceBook.size,
-          createdAt: sourceBook.mtimeMs,
-          chapters: (sourceBook.chapters ?? []).map((chapter) => ({
-            ...chapter,
-            starred: Boolean(
-              tags.chapters[chapterTagId(sourceBook.title, chapter.title)]
-                ?.starred,
-            ),
-          })),
+          size: 0,
+          createdAt: generatedAt,
+          chapters: [],
         })
       }
     }
   })
 
-  return { libraries, comics, authors, books, comicSources }
+  return { libraries, comics, authors, books, comicSources, bookSources }
+}
+
+export async function fetchRemoteBookChapters(
+  source: RemoteBookSource,
+): Promise<Book['chapters']> {
+  const [response, tags] = await Promise.all([
+    fetch(source.detailUrl, { cache: 'no-store' }),
+    fetchTagsOrEmpty(),
+  ])
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status} for ${source.detailUrl}`)
+  }
+
+  const book = (await response.json()) as BookDetailManifest
+  return book.chapters.map((chapter) => ({
+    ...chapter,
+    starred: Boolean(
+      tags.chapters[chapterTagId(source.title, chapter.title)]?.starred,
+    ),
+  }))
 }
 
 export async function fetchRemoteComicImages(
@@ -238,17 +253,15 @@ export async function fetchRemoteComicImages(
     path: page.key,
     url: versionedAssetUrl(
       source.manifestUrl,
-      source.publicBaseUrl,
       page.key,
       page.mtimeMs,
     ),
     thumbnail: versionedAssetUrl(
       source.manifestUrl,
-      source.publicBaseUrl,
       page.thumbnailKey,
       page.mtimeMs,
     ),
-    filename: page.filename,
+    filename: filenameFromKey(page.key),
     starred: Boolean(tags.images[page.key]?.starred),
     deleted: Boolean(tags.images[page.key]?.deleted),
     width: page.width,

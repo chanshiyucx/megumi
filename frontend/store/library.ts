@@ -2,8 +2,10 @@ import { create } from 'zustand'
 import { immer } from 'zustand/middleware/immer'
 import {
   fetchRemoteCatalog,
+  fetchRemoteBookChapters,
   fetchRemoteComicImages,
   type RemoteCatalog,
+  type RemoteBookSource,
   type RemoteComicSource,
 } from '@/lib/manifest'
 import { chapterTagId, patchRemoteTags } from '@/lib/tags'
@@ -35,6 +37,8 @@ interface LibraryState {
   authorBooks: Record<string, string[]>
   comicImages: Record<string, ComicImage>
   comicSources: Record<string, RemoteComicSource>
+  bookSources: Record<string, RemoteBookSource>
+  bookChapterStatus: Record<string, LoadStatus>
   loadStatus: LoadStatus
   loadError?: string
   hydrate: () => Promise<void>
@@ -42,6 +46,7 @@ interface LibraryState {
   removeLibrary: (id: string) => Promise<void>
   reorderLibrary: (orderedIds: string[]) => void
   getComicImages: (comicId: string) => Promise<Image[]>
+  getBookChapters: (bookId: string) => Promise<Book['chapters']>
   updateBookTags: (bookId: string, tags: FileTags) => Promise<void>
   updateComicTags: (comicId: string, tags: FileTags) => Promise<void>
   updateComicImageTags: (
@@ -107,6 +112,11 @@ function buildMaps(catalog: RemoteCatalog) {
     }
   }
 
+  const bookChapterStatus: Record<string, LoadStatus> = {}
+  for (const book of catalog.books) {
+    bookChapterStatus[book.id] = 'idle'
+  }
+
   return {
     libraries,
     comics,
@@ -117,6 +127,8 @@ function buildMaps(catalog: RemoteCatalog) {
     authorBooks,
     comicImages,
     comicSources: catalog.comicSources,
+    bookSources: catalog.bookSources,
+    bookChapterStatus,
   }
 }
 
@@ -131,6 +143,8 @@ export const useLibraryStore = create<LibraryState>()(
     authorBooks: {},
     comicImages: {},
     comicSources: {},
+    bookSources: {},
+    bookChapterStatus: {},
     loadStatus: 'idle',
 
     hydrate: async () => {
@@ -163,6 +177,34 @@ export const useLibraryStore = create<LibraryState>()(
     refreshLibrary: async () => {},
     removeLibrary: async () => {},
     reorderLibrary: () => {},
+    getBookChapters: async (bookId) => {
+      const book = get().books[bookId]
+      const source = get().bookSources[bookId]
+      if (!book || !source) return []
+      const status = get().bookChapterStatus[bookId] ?? 'idle'
+      if (status === 'ready') return book.chapters
+      if (status === 'loading') return book.chapters
+
+      set((state) => {
+        state.bookChapterStatus[bookId] = 'loading'
+      })
+      try {
+        const chapters = await fetchRemoteBookChapters(source)
+        set((state) => {
+          const book = state.books[bookId]
+          if (!book) return
+          book.chapters = chapters
+          state.bookChapterStatus[bookId] = 'ready'
+        })
+        return chapters
+      } catch (error) {
+        console.error(`Failed to fetch book chapters for ${bookId}:`, error)
+        set((state) => {
+          state.bookChapterStatus[bookId] = 'failed'
+        })
+        return []
+      }
+    },
     updateBookTags: async (bookId, tags) => {
       const previous = get().books[bookId]
       if (!previous) return

@@ -16,12 +16,25 @@ use turbojpeg::{Decompressor, Image as JpegImage, PixelFormat, ScalingFactor};
 const MANIFEST_FILE: &str = "manifest.json";
 const COMIC_MANIFEST_DIR: &str = "manifests";
 const STATE_FILE: &str = ".megumi/state.json";
+const TAGS_FILE: &str = ".megumi/tags.json";
 const THUMBNAIL_DIR: &str = "thumbnail";
 const SCHEMA_VERSION: u32 = 3;
 const STATE_VERSION: u32 = 2;
 const IMAGE_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png"];
 const BOOK_EXTENSIONS: &[&str] = &["txt"];
 const PROGRESS_REPORT_INTERVAL: usize = 500;
+#[cfg(target_os = "macos")]
+const TAG_KEY: &str = "com.apple.metadata:_kMDItemUserTags";
+#[cfg(target_os = "macos")]
+const FINDER_INFO_KEY: &str = "com.apple.FinderInfo";
+#[cfg(target_os = "macos")]
+const STAR_TAG_NAME: &str = "STAR";
+#[cfg(target_os = "macos")]
+const STAR_TAG_VALUE: &str = "STAR\n5";
+#[cfg(target_os = "macos")]
+const DELETE_TAG_NAME: &str = "DELETE";
+#[cfg(target_os = "macos")]
+const DELETE_TAG_VALUE: &str = "DELETE\n6";
 static THUMB_TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Parser)]
@@ -145,6 +158,23 @@ struct BookDetailManifest {
 struct ChapterManifest {
     title: String,
     line_index: usize,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+struct FileTags {
+    starred: Option<bool>,
+    deleted: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RemoteTags {
+    version: u32,
+    #[serde(default)]
+    comics: BTreeMap<String, FileTags>,
+    #[serde(default)]
+    books: BTreeMap<String, FileTags>,
+    #[serde(default)]
+    images: BTreeMap<String, FileTags>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -375,6 +405,8 @@ fn build(args: BuildArgs) -> Result<()> {
         bail!("source is not a directory: {}", source.display());
     }
 
+    sync_remote_tags_to_local(&source)?;
+
     let output_arg = args.output.unwrap_or_else(|| source.clone());
     fs::create_dir_all(&output_arg)
         .with_context(|| format!("create output directory: {}", output_arg.display()))?;
@@ -436,6 +468,218 @@ fn recommended_thumbnail_workers() -> usize {
     };
 
     (baseline / 2).clamp(1, 6)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn sync_remote_tags_to_local(_source: &Path) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn sync_remote_tags_to_local(source: &Path) -> Result<()> {
+    let tags_path = source.join(TAGS_FILE);
+    if !tags_path.exists() {
+        return Ok(());
+    }
+
+    let raw =
+        fs::read(&tags_path).with_context(|| format!("read tags: {}", tags_path.display()))?;
+    let tags: RemoteTags = serde_json::from_slice(&raw)
+        .with_context(|| format!("parse tags: {}", tags_path.display()))?;
+    if tags.version != 1 {
+        bail!(
+            "unsupported tags version {} in {}",
+            tags.version,
+            tags_path.display()
+        );
+    }
+
+    let mut sync = TagSync::new(source, &tags);
+    sync.sync_libraries()?;
+    if sync.total > 0 {
+        eprintln!(
+            "synced {} local tag targets from {} ({} changed)",
+            sync.total,
+            tags_path.display(),
+            sync.changed
+        );
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+struct TagSync<'a> {
+    source: &'a Path,
+    tags: &'a RemoteTags,
+    total: usize,
+    changed: usize,
+}
+
+#[cfg(target_os = "macos")]
+impl<'a> TagSync<'a> {
+    fn new(source: &'a Path, tags: &'a RemoteTags) -> Self {
+        Self {
+            source,
+            tags,
+            total: 0,
+            changed: 0,
+        }
+    }
+
+    fn sync_libraries(&mut self) -> Result<()> {
+        for library_dir in read_child_dirs(self.source)? {
+            match detect_library_kind(&library_dir)? {
+                LibraryKind::Comic => self.sync_comic_library(&library_dir)?,
+                LibraryKind::Book => self.sync_book_library(&library_dir)?,
+            }
+        }
+        Ok(())
+    }
+
+    fn sync_comic_library(&mut self, library_dir: &Path) -> Result<()> {
+        let direct_pages = image_files_in(library_dir)?;
+        if !direct_pages.is_empty() {
+            return self.sync_comic(library_dir, &direct_pages);
+        }
+
+        for comic_dir in read_child_dirs(library_dir)? {
+            let pages = image_files_in(&comic_dir)?;
+            if !pages.is_empty() {
+                self.sync_comic(&comic_dir, &pages)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn sync_comic(&mut self, comic_dir: &Path, image_paths: &[PathBuf]) -> Result<()> {
+        let title = display_name(comic_dir);
+        self.apply_target(comic_dir, self.tags.comics.get(&title))?;
+
+        for image_path in image_paths {
+            let key = relative_key(self.source, image_path)?;
+            self.apply_target(image_path, self.tags.images.get(&key))?;
+        }
+        Ok(())
+    }
+
+    fn sync_book_library(&mut self, library_dir: &Path) -> Result<()> {
+        let direct_books = book_files_in(library_dir)?;
+        if !direct_books.is_empty() {
+            for book_path in direct_books {
+                self.sync_book(&book_path)?;
+            }
+            return Ok(());
+        }
+
+        for author_dir in read_child_dirs(library_dir)? {
+            for book_path in book_files_in(&author_dir)? {
+                self.sync_book(&book_path)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn sync_book(&mut self, book_path: &Path) -> Result<()> {
+        let title = book_title(book_path);
+        self.apply_target(book_path, self.tags.books.get(&title))
+    }
+
+    fn apply_target(&mut self, path: &Path, tags: Option<&FileTags>) -> Result<()> {
+        if !path.exists() {
+            return Ok(());
+        }
+
+        self.total += 1;
+        let tags = desired_local_tags(tags);
+        if set_path_tags(path, tags)
+            .with_context(|| format!("sync macOS tags: {}", path.display()))?
+        {
+            self.changed += 1;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn desired_local_tags(tags: Option<&FileTags>) -> FileTags {
+    let tags = tags.copied().unwrap_or_default();
+    FileTags {
+        starred: Some(tags.starred == Some(true)),
+        deleted: Some(tags.deleted == Some(true)),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn get_tag_name(tag: &str) -> &str {
+    tag.split('\n').next().unwrap_or("")
+}
+
+#[cfg(target_os = "macos")]
+fn has_tag(tags_list: &[String], tag_name: &str) -> bool {
+    tags_list
+        .iter()
+        .any(|tag| get_tag_name(tag).eq_ignore_ascii_case(tag_name))
+}
+
+#[cfg(target_os = "macos")]
+fn update_local_tag(
+    tags_list: &mut Vec<String>,
+    tag_name: &str,
+    tag_value: &str,
+    should_have: Option<bool>,
+) {
+    let Some(should_have) = should_have else {
+        return;
+    };
+    let currently_has = has_tag(tags_list, tag_name);
+    match (should_have, currently_has) {
+        (true, false) => tags_list.push(tag_value.to_string()),
+        (false, true) => tags_list.retain(|tag| !get_tag_name(tag).eq_ignore_ascii_case(tag_name)),
+        _ => {}
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn set_path_tags(path: &Path, tags: FileTags) -> Result<bool> {
+    let mut tags_list = Vec::new();
+    if let Ok(Some(value)) = xattr::get(path, TAG_KEY)
+        && let Ok(plist::Value::Array(existing_tags)) = plist::from_bytes(&value)
+    {
+        for tag in existing_tags {
+            if let Some(text) = tag.as_string() {
+                tags_list.push(text.to_string());
+            }
+        }
+    }
+
+    let before = tags_list.clone();
+    update_local_tag(&mut tags_list, STAR_TAG_NAME, STAR_TAG_VALUE, tags.starred);
+    update_local_tag(
+        &mut tags_list,
+        DELETE_TAG_NAME,
+        DELETE_TAG_VALUE,
+        tags.deleted,
+    );
+
+    if tags_list == before {
+        return Ok(false);
+    }
+
+    let plist_tags = tags_list.into_iter().map(plist::Value::String).collect();
+    let value = plist::Value::Array(plist_tags);
+    let mut buf = Vec::new();
+    value.to_writer_xml(&mut buf)?;
+    xattr::set(path, TAG_KEY, &buf)?;
+
+    if let Ok(Some(mut data)) = xattr::get(path, FINDER_INFO_KEY) {
+        if data.len() < 32 {
+            return Ok(true);
+        }
+        data[9] &= !0x0E;
+        xattr::set(path, FINDER_INFO_KEY, &data)?;
+    }
+
+    Ok(true)
 }
 
 fn scan_libraries(ctx: &mut BuildContext) -> Result<Vec<LibraryManifest>> {
@@ -675,16 +919,7 @@ fn process_book(ctx: &mut BuildContext, source_path: &Path) -> Result<BookManife
         },
     );
 
-    let filename = source_path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or_default()
-        .to_string();
-    let title = source_path
-        .file_stem()
-        .and_then(|name| name.to_str())
-        .unwrap_or(&filename)
-        .to_string();
+    let title = book_title(source_path);
 
     if !detail_unchanged {
         let content = scan_book_chapters(source_path)?;
@@ -1282,6 +1517,18 @@ fn display_name(path: &Path) -> String {
         .to_string()
 }
 
+fn book_title(path: &Path) -> String {
+    let filename = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default()
+        .to_string();
+    path.file_stem()
+        .and_then(|name| name.to_str())
+        .unwrap_or(&filename)
+        .to_string()
+}
+
 fn modified_ms(metadata: &fs::Metadata) -> Result<u64> {
     Ok(metadata
         .modified()?
@@ -1383,6 +1630,35 @@ mod tests {
         RgbImage::from_pixel(20, 30, Rgb(color)).save(path).unwrap();
     }
 
+    #[cfg(target_os = "macos")]
+    fn write_tags_json(source: &Path, value: serde_json::Value) {
+        let path = source.join(TAGS_FILE);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    fn read_tag_values(path: &Path) -> Vec<String> {
+        let Some(value) = xattr::get(path, TAG_KEY).unwrap() else {
+            return Vec::new();
+        };
+        let Ok(plist::Value::Array(tags)) = plist::from_bytes(&value) else {
+            return Vec::new();
+        };
+        tags.into_iter()
+            .filter_map(|tag| tag.as_string().map(str::to_string))
+            .collect()
+    }
+
+    #[cfg(target_os = "macos")]
+    fn read_tag_flags(path: &Path) -> (bool, bool) {
+        let tags = read_tag_values(path);
+        (
+            has_tag(&tags, STAR_TAG_NAME),
+            has_tag(&tags, DELETE_TAG_NAME),
+        )
+    }
+
     #[test]
     fn thumbnail_keys_keep_original_directory_and_use_webp() {
         assert_eq!(
@@ -1401,6 +1677,102 @@ mod tests {
             detail_manifest_key_for(&strip_extension("Books/Author/Book.v1.txt")),
             "manifests/Books/Author/Book.v1.json"
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn build_syncs_remote_tags_to_macos_xattrs_and_clears_absent_values() {
+        let temp = TestDir::new();
+        let source = &temp.0;
+        let comic_one = source.join("Comics/One");
+        let comic_two = source.join("Comics/Two");
+        let image_one = comic_one.join("001.png");
+        let image_two = comic_two.join("001.png");
+        let first_book = source.join("Books/Author/One.txt");
+        let duplicate_book = source.join("Books/Other/One.txt");
+
+        write_test_image(&image_one, [255, 0, 0]);
+        write_test_image(&image_two, [0, 255, 0]);
+        fs::create_dir_all(first_book.parent().unwrap()).unwrap();
+        fs::create_dir_all(duplicate_book.parent().unwrap()).unwrap();
+        fs::write(&first_book, "first").unwrap();
+        fs::write(&duplicate_book, "duplicate").unwrap();
+
+        let other_tag = plist::Value::Array(vec![plist::Value::String("OTHER\n1".to_string())]);
+        let mut other_tag_buf = Vec::new();
+        other_tag.to_writer_xml(&mut other_tag_buf).unwrap();
+        xattr::set(&comic_two, TAG_KEY, &other_tag_buf).unwrap();
+        set_path_tags(
+            &image_two,
+            FileTags {
+                starred: Some(true),
+                deleted: Some(true),
+            },
+        )
+        .unwrap();
+
+        write_tags_json(
+            source,
+            serde_json::json!({
+                "version": 1,
+                "comics": { "One": { "starred": true } },
+                "books": { "One": { "deleted": true } },
+                "images": { "Comics/One/001.png": { "starred": true, "deleted": true } },
+                "chapters": { "One:序章": { "starred": true } },
+                "updatedAt": "2026-06-21T08:36:47.233Z"
+            }),
+        );
+
+        build_test_library(source);
+
+        assert_eq!(read_tag_flags(&comic_one), (true, false));
+        assert_eq!(read_tag_flags(&image_one), (true, true));
+        assert_eq!(read_tag_flags(&first_book), (false, true));
+        assert_eq!(read_tag_flags(&duplicate_book), (false, true));
+        assert_eq!(read_tag_flags(&image_two), (false, false));
+        assert!(has_tag(&read_tag_values(&comic_two), "OTHER"));
+
+        write_tags_json(
+            source,
+            serde_json::json!({
+                "version": 1,
+                "comics": {},
+                "books": {},
+                "images": {},
+                "chapters": {}
+            }),
+        );
+        build_test_library(source);
+
+        assert_eq!(read_tag_flags(&comic_one), (false, false));
+        assert_eq!(read_tag_flags(&image_one), (false, false));
+        assert_eq!(read_tag_flags(&first_book), (false, false));
+        assert_eq!(read_tag_flags(&duplicate_book), (false, false));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn malformed_tags_json_fails_without_rewriting_existing_tags() {
+        let temp = TestDir::new();
+        let source = &temp.0;
+        let comic = source.join("Comics/One");
+        write_test_image(&comic.join("001.png"), [255, 0, 0]);
+        set_path_tags(
+            &comic,
+            FileTags {
+                starred: Some(true),
+                deleted: Some(false),
+            },
+        )
+        .unwrap();
+
+        let tags_path = source.join(TAGS_FILE);
+        fs::create_dir_all(tags_path.parent().unwrap()).unwrap();
+        fs::write(&tags_path, "{ invalid json").unwrap();
+
+        let error = build(test_build_args(source)).unwrap_err().to_string();
+        assert!(error.contains("parse tags"));
+        assert_eq!(read_tag_flags(&comic), (true, false));
     }
 
     #[test]

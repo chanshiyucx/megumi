@@ -18,7 +18,7 @@ echo ""
 
 rclone sync "$LOCAL" "$REMOTE" \
   --progress \
-  --exclude ".megumi/**" \
+  --exclude ".megumi/state.json" \
   --exclude ".DS_Store" \
   --log-file="$LOG" \
   --log-level INFO

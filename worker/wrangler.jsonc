@@ -10,6 +10,20 @@
     }
   ],
   "vars": {
-    "ALLOWED_ORIGINS": "http://localhost:3000,http://127.0.0.1:3000,http://10.27.1.24:3000"
+    "ALLOWED_ORIGINS": "http://localhost:3000,http://localhost:3002,http://127.0.0.1:3000,http://10.27.1.24:3000"
+  },
+  "env": {
+    "dev": {
+      "name": "megumi-tags-dev",
+      "r2_buckets": [
+        {
+          "binding": "MEGUMI_BUCKET",
+          "bucket_name": "megumi-dev"
+        }
+      ],
+      "vars": {
+        "ALLOWED_ORIGINS": "http://localhost:3000,http://localhost:3002,http://127.0.0.1:3000,http://10.27.1.24:3000"
+      }
+    }
   }
 }

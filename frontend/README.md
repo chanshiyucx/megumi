@@ -23,6 +23,16 @@ Star/delete state is read and written through the tags Worker. Set
 `https://megumi-tags.<account>.workers.dev`. The Worker stores state in
 `.megumi/tags.json` in R2.
 
+For local development against the isolated `megumi-dev` R2 bucket, switch both
+URLs together:
+
+- `NEXT_PUBLIC_MEGUMI_MANIFEST_URL` must point at the `megumi-dev`
+  `manifest.json`.
+- `NEXT_PUBLIC_MEGUMI_TAGS_API_URL` must point at the `megumi-tags-dev` Worker.
+
+Do not switch only the manifest URL: that would load dev resources while still
+reading and writing production tag state.
+
 The remote origin must return an `Access-Control-Allow-Origin` header that
 permits the frontend origin. This applies to the manifest and UTF-8 book files;
 comic images use the same resolved object-storage base URL.

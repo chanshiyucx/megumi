@@ -136,7 +136,6 @@ export async function fetchRemoteCatalog(): Promise<RemoteCatalog> {
   }
 
   const manifest = (await response.json()) as Manifest
-  const generatedAt = Date.parse(manifest.generatedAt) || 0
   const libraries: Library[] = []
   const comics: Comic[] = []
   const authors: Author[] = []
@@ -151,7 +150,6 @@ export async function fetchRemoteCatalog(): Promise<RemoteCatalog> {
       name: sourceLibrary.title,
       path: sourceLibrary.title,
       type: sourceLibrary.kind,
-      createdAt: generatedAt,
       sortOrder,
     })
 
@@ -173,7 +171,6 @@ export async function fetchRemoteCatalog(): Promise<RemoteCatalog> {
           libraryId,
           starred: Boolean(comicTags.starred),
           deleted: Boolean(comicTags.deleted),
-          createdAt: generatedAt,
         })
       }
       return
@@ -204,8 +201,6 @@ export async function fetchRemoteCatalog(): Promise<RemoteCatalog> {
           libraryId,
           starred: Boolean(bookTags.starred),
           deleted: Boolean(bookTags.deleted),
-          size: 0,
-          createdAt: generatedAt,
           chapters: [],
         })
       }

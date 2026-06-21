@@ -16,7 +16,7 @@ const EMPTY_ARRAY: Image[] = []
 
 type StripRef = RefObject<ComicStripHandle | null>
 
-export type ComicTagTargetPolicy = 'reader' | 'library-grid' | 'library-scroll'
+type ComicTagTargetPolicy = 'reader' | 'library-grid' | 'library-scroll'
 
 interface UseComicReadingSessionOptions {
   comicId: string
@@ -55,7 +55,6 @@ export function useComicReadingSession({
   const comicImages = useLibraryStore((s) => s.comicImages[comicId])
   const images = comicImages?.images ?? EMPTY_ARRAY
   const comicImageStatus: ComicImageStatus = comicImages?.status ?? 'idle'
-  const comicImageError = comicImages?.error
   const getComicImages = useLibraryStore((s) => s.getComicImages)
   const updateComicImageTags = useLibraryStore((s) => s.updateComicImageTags)
 
@@ -171,12 +170,6 @@ export function useComicReadingSession({
   return {
     comic,
     images,
-    comicImageStatus,
-    comicImageError,
-    isReady: comicImageStatus === 'ready',
-    isLoadingComicImages: comicImageStatus === 'loading',
-    hasComicImages: images.length > 0,
-    ensureComicImages: () => getComicImages(comicId),
     currentIndex,
     previewIndex,
     setPreviewIndex,

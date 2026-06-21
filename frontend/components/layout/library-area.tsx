@@ -20,7 +20,7 @@ export function LibraryArea() {
         'bg-surface overflow-hidden md:block md:flex-1',
         isSidebarCollapsed ? 'block flex-1' : 'hidden',
       )}
-      key={selectedLibrary.createdAt}
+      key={selectedLibrary.id}
     >
       {selectedLibrary.type === LibraryType.book ? (
         <BookLibrary selectedLibrary={selectedLibrary} />

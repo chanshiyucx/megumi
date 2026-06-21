@@ -3,7 +3,6 @@ import { useRef } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { useNativeOpen } from '@/hooks/use-native-open'
 import { usePanelNav } from '@/hooks/use-panel-nav'
 import { cn } from '@/lib/style'
 import { useLibraryStore } from '@/store/library'
@@ -63,7 +62,6 @@ function AuthorItem({ author, isSelected, onSelect }: AuthorItemProps) {
       onClick={() => {
         onSelect(author.id)
       }}
-      onContextMenu={useNativeOpen(author.path)}
       className={cn(
         'hover:bg-overlay flex h-8 w-full items-center gap-2 rounded-none px-3 text-left text-sm',
         isSelected ? 'bg-overlay text-love' : 'bg-surface',

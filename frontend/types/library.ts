@@ -10,7 +10,6 @@ export interface Library {
   name: string
   path: string
   type: LibraryType
-  createdAt: number
   sortOrder: number
 }
 
@@ -29,7 +28,6 @@ export interface Comic {
   libraryId: string
   starred: boolean
   deleted: boolean
-  createdAt: number
 }
 
 export interface Author {
@@ -38,7 +36,6 @@ export interface Author {
   path: string
   libraryId: string
   bookCount: number
-  books?: Book[]
 }
 
 export interface Book {
@@ -49,8 +46,6 @@ export interface Book {
   libraryId: string
   starred: boolean
   deleted: boolean
-  size: number
-  createdAt: number
   chapters: Chapter[]
 }
 
@@ -83,7 +78,6 @@ export interface ComicImage {
   comicId: string
   status: ComicImageStatus
   images: Image[]
-  timestamp: number
   error?: string
 }
 

@@ -162,7 +162,6 @@ function buildMaps(catalog: RemoteCatalog) {
       comicId,
       status: 'idle',
       images: [],
-      timestamp: 0,
     }
   }
 
@@ -392,16 +391,12 @@ export const useLibraryStore = create<LibraryState>()(
       const source = get().comicSources[comicId]
       if (!item || !source) return []
       if (item.status === 'ready' || item.status === 'empty') {
-        set((state) => {
-          state.comicImages[comicId].timestamp = Date.now()
-        })
         return item.images
       }
       if (item.status === 'loading') return []
 
       set((state) => {
         state.comicImages[comicId].status = 'loading'
-        state.comicImages[comicId].timestamp = Date.now()
         delete state.comicImages[comicId].error
       })
       try {
@@ -411,7 +406,6 @@ export const useLibraryStore = create<LibraryState>()(
           if (!current) return
           current.status = images.length ? 'ready' : 'empty'
           current.images = images
-          current.timestamp = Date.now()
         })
         return images
       } catch (error) {
@@ -422,7 +416,6 @@ export const useLibraryStore = create<LibraryState>()(
           if (!current) return
           current.status = 'failed'
           current.error = message
-          current.timestamp = Date.now()
         })
         return []
       }

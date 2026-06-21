@@ -4,7 +4,7 @@ import { useSyncExternalStore } from 'react'
 // at or above it. 767.98px sidesteps fractional-DPI rounding at the boundary.
 const PHONE_QUERY = '(max-width: 767.98px)'
 
-export const getServerPhoneSnapshot = () => false
+const getServerPhoneSnapshot = () => false
 
 function subscribe(callback: () => void) {
   const mql = window.matchMedia(PHONE_QUERY)

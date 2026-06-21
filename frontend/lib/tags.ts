@@ -1,6 +1,6 @@
 import type { FileTags } from '@/types/library'
 
-export type TagTargetType = 'comic' | 'book' | 'image' | 'chapter'
+type TagTargetType = 'comic' | 'book' | 'image' | 'chapter'
 
 export interface RemoteTags {
   version: 1
@@ -11,7 +11,7 @@ export interface RemoteTags {
   updatedAt?: string
 }
 
-export interface PatchTagsRequest {
+interface PatchTagsRequest {
   targetType: TagTargetType
   targetId: string
   tags: FileTags

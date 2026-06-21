@@ -5,7 +5,7 @@ const DEFAULT_OVERSCAN_VIEWPORTS = 2
 const DEFAULT_MAX_RENDERED_PAGES = 16
 export type ComicStripOrientation = 'horizontal' | 'vertical'
 
-export interface ComicPageLayout {
+interface ComicPageLayout {
   index: number
   width: number
   height: number
@@ -15,7 +15,7 @@ export interface ComicPageLayout {
   center: number
 }
 
-export interface ComicStripLayout {
+interface ComicStripLayout {
   orientation: ComicStripOrientation
   containerWidth: number
   containerHeight: number
@@ -135,7 +135,7 @@ function createLayout(
   }
 }
 
-export function getComicStripCurrentIndex(
+function getComicStripCurrentIndex(
   layout: ComicStripLayout,
   scrollOffset: number,
 ): number {

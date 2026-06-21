@@ -7,7 +7,6 @@ import { ComicStrip, type ComicStripHandle } from '@/components/ui/comic-strip'
 import { GridItem } from '@/components/ui/grid-item'
 import { GridImage, ImagePreviewOverlay } from '@/components/ui/image-view'
 import { useComicReadingSession } from '@/hooks/use-comic-reading-session'
-import { useNativeOpen } from '@/hooks/use-native-open'
 import { usePanelNav } from '@/hooks/use-panel-nav'
 import { SHORTCUTS } from '@/lib/shortcuts'
 import { cn } from '@/lib/style'
@@ -42,9 +41,8 @@ function ComicItem({
 }: ComicItemProps) {
   const progress = useProgressStore((s) => s.comics[comic.id])
 
-  // A starred cover shows a star badge, a deleted one greys out and shows a
-  // trash badge; tapping either badge toggles that tag. Right-click opens the
-  // comic's folder natively (desktop only).
+  // A starred cover shows a star badge, and a deleted one greys out and shows a
+  // trash badge; tapping either badge toggles that tag.
   return (
     <GridItem
       title={comic.title}
@@ -57,7 +55,6 @@ function ComicItem({
         onClick(comic.id)
       }}
       onDoubleClick={() => onDoubleClick?.(comic.id)}
-      onContextMenu={useNativeOpen(comic.path)}
       onStar={() => void onTags(comic.id, { starred: !comic.starred })}
       onDelete={() => void onTags(comic.id, { deleted: !comic.deleted })}
     />

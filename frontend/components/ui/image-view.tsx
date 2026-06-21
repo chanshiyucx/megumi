@@ -1,4 +1,4 @@
-import { useEffect, useEffectEvent, useRef } from 'react'
+import { useEffect, useEffectEvent, useRef, useState } from 'react'
 import { GridItem } from '@/components/ui/grid-item'
 import { TagOverlay } from '@/components/ui/tag-overlay'
 import { useImageTags } from '@/hooks/use-image-tags'
@@ -58,7 +58,49 @@ export function GridImage({
   )
 }
 
-export function SingleImage({
+interface ProgressiveImageProps {
+  image: Image
+  loading?: 'eager' | 'lazy'
+}
+
+function ProgressiveImage({
+  image,
+  loading = 'eager',
+}: ProgressiveImageProps) {
+  const [loadedUrl, setLoadedUrl] = useState('')
+  const isFullLoaded = loadedUrl === image.url
+
+  return (
+    <>
+      <div
+        aria-hidden="true"
+        className={cn(
+          'bg-overlay absolute inset-0 bg-cover bg-center bg-no-repeat',
+          image.deleted && 'grayscale',
+        )}
+        style={{ backgroundImage: `url("${image.thumbnail}")` }}
+      />
+      <img
+        key={image.url}
+        src={image.url}
+        alt={image.filename}
+        decoding="async"
+        draggable={false}
+        loading={loading}
+        onLoad={() => {
+          setLoadedUrl(image.url)
+        }}
+        className={cn(
+          'absolute inset-0 block h-full w-full object-contain transition-opacity duration-100',
+          isFullLoaded ? 'opacity-100' : 'opacity-0',
+          image.deleted && 'grayscale',
+        )}
+      />
+    </>
+  )
+}
+
+function SingleImage({
   comicId,
   image,
   onTags,
@@ -85,7 +127,10 @@ export function SingleImage({
           src={image.url}
           alt={image.filename}
           decoding="async"
-          className={cn('block h-full w-full', image.deleted && 'grayscale')}
+          className={cn(
+            'block h-full w-full object-contain',
+            image.deleted && 'grayscale',
+          )}
         />
         <TagOverlay layout="bar" {...controls} />
       </div>
@@ -114,17 +159,7 @@ export function ScrollImage({
       }}
       {...gestures}
     >
-      <img
-        src={image.url}
-        alt={image.filename}
-        decoding="async"
-        draggable={false}
-        loading={loading}
-        className={cn(
-          'block h-full w-full object-contain',
-          image.deleted && 'grayscale',
-        )}
-      />
+      <ProgressiveImage image={image} loading={loading} />
       <TagOverlay layout="bar" {...controls} />
     </figure>
   )
@@ -136,7 +171,7 @@ interface ImagePreviewProps extends Omit<ImageProps, 'image' | 'onClick'> {
   onIndexChange: (index: number) => void
 }
 
-export function ImagePreview({
+function ImagePreview({
   comicId,
   images,
   index,

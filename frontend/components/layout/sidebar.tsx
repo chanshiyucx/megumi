@@ -29,7 +29,7 @@ const LibraryIcon = {
 
 const POINTER_SENSOR_OPTIONS = { activationConstraint: { distance: 8 } }
 
-export function reorderLibraryIdsAfterDrag(
+function reorderLibraryIdsAfterDrag(
   libraryIds: string[],
   activeId: string,
   overId: string | null | undefined,

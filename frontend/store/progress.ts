@@ -6,19 +6,31 @@ import type { BookProgress, ComicProgress } from '@/types/library'
 interface ProgressState {
   comics: Record<string, ComicProgress>
   books: Record<string, BookProgress>
-  favoriteChapters: Record<string, number[]>
   updateComicProgress: (comicId: string, progress: ComicProgress) => void
   updateBookProgress: (bookId: string, progress: BookProgress) => void
-  removeComicProgress: (comicId: string) => void
-  removeBookProgress: (bookId: string) => void
-  toggleChapterFavorite: (bookId: string, lineIndex: number) => void
-  removeBookChapters: (bookId: string) => void
 }
 
 interface PersistedProgressState {
   comics: Record<string, ComicProgress>
   books: Record<string, BookProgress>
-  favoriteChapters: Record<string, number[]>
+}
+
+function isProgressRecord(value: unknown) {
+  return value && typeof value === 'object' ? value : {}
+}
+
+function mergePersistedProgress(
+  persisted: unknown,
+  current: ProgressState,
+): ProgressState {
+  if (!persisted || typeof persisted !== 'object') return current
+
+  const state = persisted as Partial<PersistedProgressState>
+  return {
+    ...current,
+    comics: isProgressRecord(state.comics) as Record<string, ComicProgress>,
+    books: isProgressRecord(state.books) as Record<string, BookProgress>,
+  }
 }
 
 export const useProgressStore = create<ProgressState>()(
@@ -26,7 +38,6 @@ export const useProgressStore = create<ProgressState>()(
     immer((set) => ({
       comics: {},
       books: {},
-      favoriteChapters: {},
       updateComicProgress: (comicId, progress) =>
         set((state) => {
           state.comics[comicId] = progress
@@ -35,35 +46,6 @@ export const useProgressStore = create<ProgressState>()(
         set((state) => {
           state.books[bookId] = progress
         }),
-      removeComicProgress: (comicId) =>
-        set((state) => {
-          delete state.comics[comicId]
-        }),
-      removeBookProgress: (bookId) =>
-        set((state) => {
-          delete state.books[bookId]
-        }),
-      toggleChapterFavorite: (bookId, lineIndex) =>
-        set((state) => {
-          const list = state.favoriteChapters[bookId]
-          if (!list) {
-            state.favoriteChapters[bookId] = [lineIndex]
-            return
-          }
-
-          const index = list.indexOf(lineIndex)
-          if (index === -1) {
-            list.push(lineIndex)
-            return
-          }
-
-          list.splice(index, 1)
-          if (list.length === 0) delete state.favoriteChapters[bookId]
-        }),
-      removeBookChapters: (bookId) =>
-        set((state) => {
-          delete state.favoriteChapters[bookId]
-        }),
     })),
     {
       name: 'megumi-progress',
@@ -71,8 +53,8 @@ export const useProgressStore = create<ProgressState>()(
       partialize: (state): PersistedProgressState => ({
         comics: state.comics,
         books: state.books,
-        favoriteChapters: state.favoriteChapters,
       }),
+      merge: mergePersistedProgress,
     },
   ),
 )

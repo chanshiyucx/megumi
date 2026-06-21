@@ -14,7 +14,6 @@ interface TabsState {
   addTab: (tab: Tab) => void
   removeTab: (tabId: string) => void
   setActiveTab: (tabId: string) => void
-  clearAllTabs: () => void
 }
 
 export const useTabsStore = create<TabsState>()(
@@ -38,6 +37,5 @@ export const useTabsStore = create<TabsState>()(
         state.tabs.splice(index, 1)
       }),
     setActiveTab: (tabId) => set({ activeTab: tabId }),
-    clearAllTabs: () => set({ tabs: [], activeTab: '' }),
   })),
 )

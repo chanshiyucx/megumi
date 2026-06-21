@@ -65,7 +65,6 @@ const StripPage = memo(function StripPage({
         comicId={comicId}
         image={image}
         className="h-full w-full"
-        loading="eager"
         onDoubleClick={onDoubleClick}
         onTags={onTags}
       />

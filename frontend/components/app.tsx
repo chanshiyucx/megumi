@@ -6,6 +6,7 @@ import { AppLayout } from '@/components/layout/app-layout'
 import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/ui/spinner'
 import { useLibraryStore } from '@/store/library'
+import { initializeThemeSync } from '@/store/ui'
 
 export function App() {
   const loadStatus = useLibraryStore((state) => state.loadStatus)
@@ -13,15 +14,11 @@ export function App() {
   const hydrate = useLibraryStore((state) => state.hydrate)
 
   useEffect(() => {
+    const cleanupThemeSync = initializeThemeSync()
     void hydrate()
 
-    const blockContextMenu = (event: MouseEvent) => {
-      event.preventDefault()
-    }
-    document.addEventListener('contextmenu', blockContextMenu)
-
     return () => {
-      document.removeEventListener('contextmenu', blockContextMenu)
+      cleanupThemeSync()
     }
   }, [hydrate])
 

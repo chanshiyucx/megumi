@@ -65,6 +65,11 @@ export interface RemoteCatalog {
   books: Book[]
   comicSources: Record<string, RemoteComicSource>
   bookSources: Record<string, RemoteBookSource>
+  tags: RemoteTags
+}
+
+export interface FetchRemoteCatalogOptions {
+  allowEmptyTagsFallback?: boolean
 }
 
 export interface RemoteComicSource {
@@ -121,7 +126,9 @@ async function fetchTagsOrEmpty(): Promise<RemoteTags> {
   }
 }
 
-export async function fetchRemoteCatalog(): Promise<RemoteCatalog> {
+export async function fetchRemoteCatalog({
+  allowEmptyTagsFallback = true,
+}: FetchRemoteCatalogOptions = {}): Promise<RemoteCatalog> {
   const manifestUrl = process.env.NEXT_PUBLIC_MEGUMI_MANIFEST_URL
   if (!manifestUrl) {
     throw new Error('NEXT_PUBLIC_MEGUMI_MANIFEST_URL is not configured')
@@ -129,7 +136,7 @@ export async function fetchRemoteCatalog(): Promise<RemoteCatalog> {
 
   const [response, tags] = await Promise.all([
     fetch(manifestUrl, { cache: 'no-store' }),
-    fetchTagsOrEmpty(),
+    allowEmptyTagsFallback ? fetchTagsOrEmpty() : fetchRemoteTags(),
   ])
   if (!response.ok) {
     throw new Error(`HTTP ${response.status} for ${manifestUrl}`)
@@ -207,7 +214,7 @@ export async function fetchRemoteCatalog(): Promise<RemoteCatalog> {
     }
   })
 
-  return { libraries, comics, authors, books, comicSources, bookSources }
+  return { libraries, comics, authors, books, comicSources, bookSources, tags }
 }
 
 export async function fetchRemoteBookChapters(

@@ -10,9 +10,11 @@ import {
 } from '@/lib/manifest'
 import { chapterTagId, patchRemoteTags } from '@/lib/tags'
 import { useUIStore } from '@/store/ui'
+import { useTabsStore } from '@/store/tabs'
 import type {
   Author,
   Book,
+  Chapter,
   Comic,
   ComicImage,
   FileTags,
@@ -26,6 +28,10 @@ const collator = new Intl.Collator(undefined, {
 })
 
 const LIBRARY_ORDER_STORAGE_KEY = 'megumi-library-order'
+const comicImageLoads = new Map<string, Promise<Image[]>>()
+const bookChapterLoads = new Map<string, Promise<Chapter[]>>()
+let hydrateLoad: Promise<void> | null = null
+let hydrateSeq = 0
 
 type LoadStatus = 'idle' | 'loading' | 'ready' | 'failed'
 
@@ -123,7 +129,23 @@ function applyLibraryOrder(
   return orderedIds
 }
 
-function buildMaps(catalog: RemoteCatalog) {
+function applyRemoteImageTags(images: Image[], catalog: RemoteCatalog) {
+  for (const image of images) {
+    const tags = catalog.tags.images[image.path] ?? {}
+    image.starred = Boolean(tags.starred)
+    image.deleted = Boolean(tags.deleted)
+  }
+}
+
+function applyRemoteChapterTags(book: Book, catalog: RemoteCatalog) {
+  for (const chapter of book.chapters) {
+    const tags =
+      catalog.tags.chapters[chapterTagId(book.title, chapter.title)] ?? {}
+    chapter.starred = Boolean(tags.starred)
+  }
+}
+
+function buildMaps(catalog: RemoteCatalog, previous: LibraryState) {
   const libraries: Record<string, Library> = {}
   for (const library of catalog.libraries) libraries[library.id] = library
 
@@ -144,6 +166,11 @@ function buildMaps(catalog: RemoteCatalog) {
   const books: Record<string, Book> = {}
   const authorBooks: Record<string, string[]> = {}
   for (const book of catalog.books) {
+    const previousBook = previous.books[book.id]
+    if (previousBook?.chapters.length) {
+      book.chapters = previousBook.chapters.map((chapter) => ({ ...chapter }))
+      applyRemoteChapterTags(book, catalog)
+    }
     books[book.id] = book
     ;(authorBooks[book.authorId] ??= []).push(book.id)
   }
@@ -158,6 +185,16 @@ function buildMaps(catalog: RemoteCatalog) {
   const comicImages: Record<string, ComicImage> = {}
   for (const comic of catalog.comics) {
     const comicId = comic.id
+    const previousImages = previous.comicImages[comicId]
+    if (previousImages) {
+      const preservedImages = {
+        ...previousImages,
+        images: previousImages.images.map((image) => ({ ...image })),
+      }
+      applyRemoteImageTags(preservedImages.images, catalog)
+      comicImages[comicId] = preservedImages
+      continue
+    }
     comicImages[comicId] = {
       comicId,
       status: 'idle',
@@ -167,7 +204,7 @@ function buildMaps(catalog: RemoteCatalog) {
 
   const bookChapterStatus: Record<string, LoadStatus> = {}
   for (const book of catalog.books) {
-    bookChapterStatus[book.id] = 'idle'
+    bookChapterStatus[book.id] = previous.bookChapterStatus[book.id] ?? 'idle'
   }
 
   return {
@@ -182,6 +219,25 @@ function buildMaps(catalog: RemoteCatalog) {
     comicSources: catalog.comicSources,
     bookSources: catalog.bookSources,
     bookChapterStatus,
+  }
+}
+
+function pruneTabsForCatalog(
+  comics: Record<string, Comic>,
+  books: Record<string, Book>,
+) {
+  const invalidTabIds = useTabsStore
+    .getState()
+    .tabs.filter((tab) => !comics[tab.id] && !books[tab.id])
+    .map((tab) => tab.id)
+
+  for (const tabId of invalidTabIds) {
+    useTabsStore.getState().removeTab(tabId)
+  }
+
+  const activeTab = useTabsStore.getState().activeTab
+  if (activeTab && !comics[activeTab] && !books[activeTab]) {
+    useTabsStore.getState().setActiveTab('')
   }
 }
 
@@ -201,34 +257,52 @@ export const useLibraryStore = create<LibraryState>()(
     loadStatus: 'idle',
 
     hydrate: async () => {
-      set((state) => {
-        state.loadStatus = 'loading'
-        delete state.loadError
-      })
-      try {
-        const catalog = await fetchRemoteCatalog()
-        const maps = buildMaps(catalog)
-        const orderedLibraryIds = applyLibraryOrder(
-          maps.libraries,
-          readStoredLibraryOrder(),
-        )
-        set((state) => {
-          Object.assign(state, maps)
-          state.loadStatus = 'ready'
-        })
+      if (hydrateLoad) return hydrateLoad
+      const wasReady = get().loadStatus === 'ready'
+      const seq = ++hydrateSeq
 
-        const ui = useUIStore.getState()
-        if (!ui.selectedLibraryId || !maps.libraries[ui.selectedLibraryId]) {
-          ui.setSelectedLibraryId(orderedLibraryIds[0] ?? null)
-        }
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error)
-        console.error('Failed to fetch manifest:', error)
+      hydrateLoad = (async () => {
         set((state) => {
-          state.loadStatus = 'failed'
-          state.loadError = message
+          if (!wasReady) {
+            state.loadStatus = 'loading'
+            delete state.loadError
+          }
         })
-      }
+        try {
+          const catalog = await fetchRemoteCatalog({
+            allowEmptyTagsFallback: !wasReady,
+          })
+          if (seq !== hydrateSeq) return
+          const maps = buildMaps(catalog, get())
+          const orderedLibraryIds = applyLibraryOrder(
+            maps.libraries,
+            readStoredLibraryOrder(),
+          )
+          set((state) => {
+            Object.assign(state, maps)
+            state.loadStatus = 'ready'
+          })
+
+          const ui = useUIStore.getState()
+          if (!ui.selectedLibraryId || !maps.libraries[ui.selectedLibraryId]) {
+            ui.setSelectedLibraryId(orderedLibraryIds[0] ?? null)
+          }
+          pruneTabsForCatalog(maps.comics, maps.books)
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          console.error('Failed to fetch manifest:', error)
+          if (wasReady) return
+          if (seq !== hydrateSeq) return
+          set((state) => {
+            state.loadStatus = 'failed'
+            state.loadError = message
+          })
+        } finally {
+          if (hydrateLoad) hydrateLoad = null
+        }
+      })()
+
+      return hydrateLoad
     },
 
     reorderLibrary: (orderedIds) => {
@@ -244,27 +318,36 @@ export const useLibraryStore = create<LibraryState>()(
       if (!book || !source) return []
       const status = get().bookChapterStatus[bookId] ?? 'idle'
       if (status === 'ready') return book.chapters
-      if (status === 'loading') return book.chapters
+      const existingLoad = bookChapterLoads.get(bookId)
+      if (existingLoad) return existingLoad
 
       set((state) => {
         state.bookChapterStatus[bookId] = 'loading'
       })
-      try {
-        const chapters = await fetchRemoteBookChapters(source)
-        set((state) => {
-          const book = state.books[bookId]
-          if (!book) return
-          book.chapters = chapters
-          state.bookChapterStatus[bookId] = 'ready'
-        })
-        return chapters
-      } catch (error) {
-        console.error(`Failed to fetch book chapters for ${bookId}:`, error)
-        set((state) => {
-          state.bookChapterStatus[bookId] = 'failed'
-        })
-        return []
-      }
+
+      const load = (async () => {
+        try {
+          const chapters = await fetchRemoteBookChapters(source)
+          set((state) => {
+            const book = state.books[bookId]
+            if (!book) return
+            book.chapters = chapters
+            state.bookChapterStatus[bookId] = 'ready'
+          })
+          return chapters
+        } catch (error) {
+          console.error(`Failed to fetch book chapters for ${bookId}:`, error)
+          set((state) => {
+            state.bookChapterStatus[bookId] = 'failed'
+          })
+          return []
+        } finally {
+          bookChapterLoads.delete(bookId)
+        }
+      })()
+
+      bookChapterLoads.set(bookId, load)
+      return load
     },
     updateBookTags: async (bookId, tags) => {
       const previous = get().books[bookId]
@@ -393,32 +476,43 @@ export const useLibraryStore = create<LibraryState>()(
       if (item.status === 'ready' || item.status === 'empty') {
         return item.images
       }
-      if (item.status === 'loading') return []
+      const existingLoad = comicImageLoads.get(comicId)
+      if (existingLoad) return existingLoad
 
       set((state) => {
-        state.comicImages[comicId].status = 'loading'
-        delete state.comicImages[comicId].error
+        const current = state.comicImages[comicId]
+        if (!current) return
+        current.status = 'loading'
+        delete current.error
       })
-      try {
-        const images = await fetchRemoteComicImages(source)
-        set((state) => {
-          const current = state.comicImages[comicId]
-          if (!current) return
-          current.status = images.length ? 'ready' : 'empty'
-          current.images = images
-        })
-        return images
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error)
-        console.error(`Failed to fetch comic manifest for ${comicId}:`, error)
-        set((state) => {
-          const current = state.comicImages[comicId]
-          if (!current) return
-          current.status = 'failed'
-          current.error = message
-        })
-        return []
-      }
+
+      const load = (async () => {
+        try {
+          const images = await fetchRemoteComicImages(source)
+          set((state) => {
+            const current = state.comicImages[comicId]
+            if (!current) return
+            current.status = images.length ? 'ready' : 'empty'
+            current.images = images
+          })
+          return images
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          console.error(`Failed to fetch comic manifest for ${comicId}:`, error)
+          set((state) => {
+            const current = state.comicImages[comicId]
+            if (!current) return
+            current.status = 'failed'
+            current.error = message
+          })
+          return []
+        } finally {
+          comicImageLoads.delete(comicId)
+        }
+      })()
+
+      comicImageLoads.set(comicId, load)
+      return load
     },
   })),
 )

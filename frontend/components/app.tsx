@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect } from 'react'
+import { useEffect, useEffectEvent } from 'react'
 import { RefreshCw } from 'lucide-react'
 import { AppLayout } from '@/components/layout/app-layout'
 import { Button } from '@/components/ui/button'
@@ -12,15 +12,33 @@ export function App() {
   const loadStatus = useLibraryStore((state) => state.loadStatus)
   const loadError = useLibraryStore((state) => state.loadError)
   const hydrate = useLibraryStore((state) => state.hydrate)
+  const refreshHydrate = useEffectEvent(() => hydrate())
 
   useEffect(() => {
     const cleanupThemeSync = initializeThemeSync()
-    void hydrate()
+    let inflight: Promise<void> | null = null
+    const refresh = () => {
+      if (inflight) return inflight
+      inflight = refreshHydrate().finally(() => {
+        inflight = null
+      })
+      return inflight
+    }
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === 'visible') void refresh()
+    }
 
+    void refresh()
+    window.addEventListener('focus', refreshWhenVisible)
+    window.addEventListener('pageshow', refreshWhenVisible)
+    document.addEventListener('visibilitychange', refreshWhenVisible)
     return () => {
+      window.removeEventListener('focus', refreshWhenVisible)
+      window.removeEventListener('pageshow', refreshWhenVisible)
+      document.removeEventListener('visibilitychange', refreshWhenVisible)
       cleanupThemeSync()
     }
-  }, [hydrate])
+  }, [])
 
   if (loadStatus === 'idle' || loadStatus === 'loading') {
     return (

@@ -1,5 +1,9 @@
 import { create } from 'zustand'
-import { subscribeWithSelector } from 'zustand/middleware'
+import {
+  createJSONStorage,
+  persist,
+  subscribeWithSelector,
+} from 'zustand/middleware'
 import { immer } from 'zustand/middleware/immer'
 import type { LibraryNavStatus } from '@/types/library'
 
@@ -20,6 +24,15 @@ interface UIState {
   setTheme: (theme: ThemeMode) => void
   setSelectedLibraryId: (id: string | null) => void
   setNavStatus: (libraryId: string, status: LibraryNavStatus) => void
+}
+
+interface PersistedUIState {
+  isSidebarCollapsed: boolean
+  isMiddleCollapsed: boolean
+  isImmersive: boolean
+  theme: ThemeMode
+  selectedLibraryId: string | null
+  navStatus: Record<string, LibraryNavStatus>
 }
 
 const applyTheme = (theme: ThemeMode) => {
@@ -58,24 +71,50 @@ export function initializeThemeSync() {
 
 export const useUIStore = create<UIState>()(
   subscribeWithSelector(
-    immer((set) => ({
-      isSidebarCollapsed: false,
-      isMiddleCollapsed: false,
-      isImmersive: false,
-      theme: 'system',
-      selectedLibraryId: null,
-      navStatus: {},
-      toggleSidebar: () => set((state) => { state.isSidebarCollapsed = !state.isSidebarCollapsed }),
-      toggleMiddle: () => set((state) => { state.isMiddleCollapsed = !state.isMiddleCollapsed }),
-      setSidebarCollapsed: (value) => set({ isSidebarCollapsed: value }),
-      setMiddleCollapsed: (value) => set({ isMiddleCollapsed: value }),
-      toggleImmersive: () => set((state) => { state.isImmersive = !state.isImmersive }),
-      setTheme: (theme) => set({ theme }),
-      setSelectedLibraryId: (id) => set({ selectedLibraryId: id }),
-      setNavStatus: (libraryId, status) =>
-        set((state) => {
-          state.navStatus[libraryId] = { ...state.navStatus[libraryId], ...status }
+    persist(
+      immer((set) => ({
+        isSidebarCollapsed: false,
+        isMiddleCollapsed: false,
+        isImmersive: false,
+        theme: 'system',
+        selectedLibraryId: null,
+        navStatus: {},
+        toggleSidebar: () =>
+          set((state) => {
+            state.isSidebarCollapsed = !state.isSidebarCollapsed
+          }),
+        toggleMiddle: () =>
+          set((state) => {
+            state.isMiddleCollapsed = !state.isMiddleCollapsed
+          }),
+        setSidebarCollapsed: (value) => set({ isSidebarCollapsed: value }),
+        setMiddleCollapsed: (value) => set({ isMiddleCollapsed: value }),
+        toggleImmersive: () =>
+          set((state) => {
+            state.isImmersive = !state.isImmersive
+          }),
+        setTheme: (theme) => set({ theme }),
+        setSelectedLibraryId: (id) => set({ selectedLibraryId: id }),
+        setNavStatus: (libraryId, status) =>
+          set((state) => {
+            state.navStatus[libraryId] = {
+              ...state.navStatus[libraryId],
+              ...status,
+            }
+          }),
+      })),
+      {
+        name: 'megumi-ui',
+        storage: createJSONStorage(() => localStorage),
+        partialize: (state): PersistedUIState => ({
+          isSidebarCollapsed: state.isSidebarCollapsed,
+          isMiddleCollapsed: state.isMiddleCollapsed,
+          isImmersive: state.isImmersive,
+          theme: state.theme,
+          selectedLibraryId: state.selectedLibraryId,
+          navStatus: state.navStatus,
         }),
-    })),
+      },
+    ),
   ),
 )

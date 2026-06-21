@@ -142,13 +142,7 @@ export function BookReader({ bookId, showReading = false }: BookReaderProps) {
   const addTab = useTabsStore((s) => s.addTab)
   const setActiveTab = useTabsStore((s) => s.setActiveTab)
 
-  const content =
-    bookData?.bookId === bookId
-      ? {
-          ...bookData.content,
-          chapters: book?.chapters ?? bookData.content.chapters,
-        }
-      : null
+  const content = bookData?.bookId === bookId ? bookData.content : null
   const lines = content?.lines ?? EMPTY_LINES
 
   const updateBookProgress = useProgressStore((s) => s.updateBookProgress)
@@ -180,16 +174,19 @@ export function BookReader({ bookId, showReading = false }: BookReaderProps) {
 
   useEffect(() => {
     if (!book?.path) return
-    void getBookChapters(bookId)
 
     let cancelled = false
     const load = async () => {
       setIsLoading(true)
       setLoadProgress(0)
       try {
-        const data = await parseBook(book.path, (percent) => {
-          if (!cancelled) setLoadProgress(percent)
-        })
+        const [data, chapters] = await Promise.all([
+          parseBook(book.path, (percent) => {
+            if (!cancelled) setLoadProgress(percent)
+          }),
+          getBookChapters(bookId),
+        ])
+        data.chapters = chapters
         if (!cancelled) setBookData({ bookId, content: data })
       } catch (e) {
         console.error('Failed to load book', e)

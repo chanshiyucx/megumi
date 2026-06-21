@@ -12,7 +12,8 @@ import {
   useSortable,
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable'
-import { BookImage, LibraryBig } from 'lucide-react'
+import { BookImage, LibraryBig, RefreshCw } from 'lucide-react'
+import { useEffect, useState } from 'react'
 import { ThemeSwitcher } from '@/components/layout/theme-switcher'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -28,6 +29,33 @@ const LibraryIcon = {
 }
 
 const POINTER_SENSOR_OPTIONS = { activationConstraint: { distance: 8 } }
+
+function isStandalonePwa() {
+  if (typeof window === 'undefined') return false
+  return (
+    window.matchMedia('(display-mode: standalone)').matches ||
+    (window.navigator as Navigator & { standalone?: boolean }).standalone ===
+      true
+  )
+}
+
+function useStandalonePwa() {
+  const [standalone, setStandalone] = useState(false)
+
+  useEffect(() => {
+    const mediaQuery = window.matchMedia('(display-mode: standalone)')
+    const update = () => {
+      setStandalone(isStandalonePwa())
+    }
+    update()
+    mediaQuery.addEventListener('change', update)
+    return () => {
+      mediaQuery.removeEventListener('change', update)
+    }
+  }, [])
+
+  return standalone
+}
 
 function reorderLibraryIdsAfterDrag(
   libraryIds: string[],
@@ -111,8 +139,10 @@ export function Sidebar() {
   const selectedLibraryId = useUIStore((s) => s.selectedLibraryId)
   const setSelectedLibraryId = useUIStore((s) => s.setSelectedLibraryId)
   const { openMiddle } = usePanelNav()
+  const isStandalone = useStandalonePwa()
 
   const libraries = useLibraryStore((s) => s.libraries)
+  const hydrate = useLibraryStore((s) => s.hydrate)
   const reorderLibrary = useLibraryStore((s) => s.reorderLibrary)
 
   const librariesList = Object.values(libraries).sort(
@@ -168,8 +198,18 @@ export function Sidebar() {
         </DndContext>
       </ScrollArea>
 
-      <div className="p-4">
+      <div className="flex items-center gap-2 p-4">
         <ThemeSwitcher />
+        {isStandalone && (
+          <Button
+            className="h-8 w-8"
+            onClick={() => void hydrate()}
+            title="刷新"
+            aria-label="刷新"
+          >
+            <RefreshCw className="h-4 w-4" />
+          </Button>
+        )}
       </div>
     </aside>
   )

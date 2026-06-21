@@ -25,6 +25,8 @@ const collator = new Intl.Collator(undefined, {
   sensitivity: 'base',
 })
 
+const LIBRARY_ORDER_STORAGE_KEY = 'megumi-library-order'
+
 type LoadStatus = 'idle' | 'loading' | 'ready' | 'failed'
 
 interface LibraryState {
@@ -42,8 +44,6 @@ interface LibraryState {
   loadStatus: LoadStatus
   loadError?: string
   hydrate: () => Promise<void>
-  refreshLibrary: (libraryId: string) => Promise<void>
-  removeLibrary: (id: string) => Promise<void>
   reorderLibrary: (orderedIds: string[]) => void
   getComicImages: (comicId: string) => Promise<Image[]>
   getBookChapters: (bookId: string) => Promise<Book['chapters']>
@@ -67,6 +67,60 @@ function applyFileTags(
 ) {
   if (tags.starred !== undefined) item.starred = tags.starred
   if (tags.deleted !== undefined) item.deleted = tags.deleted
+}
+
+function readStoredLibraryOrder() {
+  if (typeof window === 'undefined') return []
+
+  try {
+    const raw = localStorage.getItem(LIBRARY_ORDER_STORAGE_KEY)
+    const parsed: unknown = raw ? JSON.parse(raw) : []
+    return Array.isArray(parsed)
+      ? parsed.filter((id): id is string => typeof id === 'string')
+      : []
+  } catch (error) {
+    console.error('Failed to read library order:', error)
+    return []
+  }
+}
+
+function writeStoredLibraryOrder(orderedIds: string[]) {
+  if (typeof window === 'undefined') return
+
+  try {
+    localStorage.setItem(LIBRARY_ORDER_STORAGE_KEY, JSON.stringify(orderedIds))
+  } catch (error) {
+    console.error('Failed to save library order:', error)
+  }
+}
+
+function normalizeLibraryOrder(
+  libraries: Record<string, Library>,
+  preferredOrder: string[],
+) {
+  const seen = new Set<string>()
+  const orderedIds = preferredOrder.filter((id) => {
+    if (!libraries[id] || seen.has(id)) return false
+    seen.add(id)
+    return true
+  })
+  const remainingIds = Object.values(libraries)
+    .filter((library) => !seen.has(library.id))
+    .sort((a, b) => a.sortOrder - b.sortOrder)
+    .map((library) => library.id)
+
+  return [...orderedIds, ...remainingIds]
+}
+
+function applyLibraryOrder(
+  libraries: Record<string, Library>,
+  preferredOrder: string[],
+) {
+  const orderedIds = normalizeLibraryOrder(libraries, preferredOrder)
+  orderedIds.forEach((id, index) => {
+    libraries[id].sortOrder = index
+  })
+  return orderedIds
 }
 
 function buildMaps(catalog: RemoteCatalog) {
@@ -155,6 +209,10 @@ export const useLibraryStore = create<LibraryState>()(
       try {
         const catalog = await fetchRemoteCatalog()
         const maps = buildMaps(catalog)
+        const orderedLibraryIds = applyLibraryOrder(
+          maps.libraries,
+          readStoredLibraryOrder(),
+        )
         set((state) => {
           Object.assign(state, maps)
           state.loadStatus = 'ready'
@@ -162,7 +220,7 @@ export const useLibraryStore = create<LibraryState>()(
 
         const ui = useUIStore.getState()
         if (!ui.selectedLibraryId || !maps.libraries[ui.selectedLibraryId]) {
-          ui.setSelectedLibraryId(catalog.libraries[0]?.id ?? null)
+          ui.setSelectedLibraryId(orderedLibraryIds[0] ?? null)
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
@@ -174,9 +232,13 @@ export const useLibraryStore = create<LibraryState>()(
       }
     },
 
-    refreshLibrary: async () => {},
-    removeLibrary: async () => {},
-    reorderLibrary: () => {},
+    reorderLibrary: (orderedIds) => {
+      const nextOrder = normalizeLibraryOrder(get().libraries, orderedIds)
+      set((state) => {
+        applyLibraryOrder(state.libraries, nextOrder)
+      })
+      writeStoredLibraryOrder(nextOrder)
+    },
     getBookChapters: async (bookId) => {
       const book = get().books[bookId]
       const source = get().bookSources[bookId]

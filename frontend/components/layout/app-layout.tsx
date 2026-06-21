@@ -11,7 +11,7 @@ export function AppLayout() {
 
       <TabArea />
 
-      <div className="flex flex-1">
+      <div className="flex min-h-0 flex-1 overflow-hidden">
         <Sidebar />
         <LibraryArea />
       </div>

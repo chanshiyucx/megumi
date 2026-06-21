@@ -12,7 +12,7 @@ import {
   useSortable,
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable'
-import { BookImage, LibraryBig, RefreshCw, Trash2 } from 'lucide-react'
+import { BookImage, LibraryBig } from 'lucide-react'
 import { ThemeSwitcher } from '@/components/layout/theme-switcher'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -49,19 +49,13 @@ export function reorderLibraryIdsAfterDrag(
 interface SortableLibraryItemProps {
   library: Library
   isSelected: boolean
-  isScanning: boolean
   onSelect: (library: Library) => void
-  onRefresh: (library: Library) => Promise<void>
-  onRemove: (library: Library) => Promise<void>
 }
 
 function SortableLibraryItem({
   library,
   isSelected,
-  isScanning,
   onSelect,
-  onRefresh,
-  onRemove,
 }: SortableLibraryItemProps) {
   const {
     attributes,
@@ -108,25 +102,6 @@ function SortableLibraryItem({
         </span>
         <span>{library.name}</span>
       </Button>
-      <div className="absolute top-1/2 right-1 flex -translate-y-1/2 gap-1 opacity-0 transition-opacity duration-300 group-hover:opacity-100">
-        <Button
-          className="text-subtle bg-overlay hover:text-love h-6 w-6"
-          onClick={() => void onRefresh(library)}
-          disabled={isScanning}
-          aria-label={`刷新库 ${library.name}`}
-          title="刷新库"
-        >
-          <RefreshCw className="h-4 w-4" />
-        </Button>
-        <Button
-          className="text-subtle bg-overlay hover:text-love h-6 w-6"
-          onClick={() => void onRemove(library)}
-          aria-label={`删除库 ${library.name}`}
-          title="删除库"
-        >
-          <Trash2 className="h-4 w-4" />
-        </Button>
-      </div>
     </div>
   )
 }
@@ -135,12 +110,9 @@ export function Sidebar() {
   const isSidebarCollapsed = useUIStore((s) => s.isSidebarCollapsed)
   const selectedLibraryId = useUIStore((s) => s.selectedLibraryId)
   const setSelectedLibraryId = useUIStore((s) => s.setSelectedLibraryId)
-  const isScanning = useUIStore((s) => s.isScanning)
   const { openMiddle } = usePanelNav()
 
   const libraries = useLibraryStore((s) => s.libraries)
-  const removeLibrary = useLibraryStore((s) => s.removeLibrary)
-  const refreshLibrary = useLibraryStore((s) => s.refreshLibrary)
   const reorderLibrary = useLibraryStore((s) => s.reorderLibrary)
 
   const librariesList = Object.values(libraries).sort(
@@ -165,33 +137,15 @@ export function Sidebar() {
     openMiddle()
   }
 
-  const handleRefresh = async (library: Library) => {
-    if (!window.confirm(`确认刷新库 "${library.name}"?`)) return
-    try {
-      await refreshLibrary(library.id)
-    } catch (error) {
-      alert('刷新库失败: ' + String(error))
-    }
-  }
-
-  const handleRemove = async (library: Library) => {
-    if (!window.confirm(`确认删除库 "${library.name}"?`)) return
-    try {
-      await removeLibrary(library.id)
-    } catch (error) {
-      alert('删除库失败: ' + String(error))
-    }
-  }
-
   return (
     <aside
       aria-label="库侧边栏"
       className={cn(
-        'bg-base h-full w-full flex-col border-r md:w-56',
+        'bg-base h-full min-h-0 w-full flex-col border-r md:w-56',
         isSidebarCollapsed ? 'hidden' : 'flex',
       )}
     >
-      <ScrollArea aria-label="库列表" viewportClassName="h-0 flex-1">
+      <ScrollArea aria-label="库列表" viewportClassName="min-h-0 flex-1">
         <DndContext
           sensors={sensors}
           collisionDetection={closestCenter}
@@ -207,10 +161,7 @@ export function Sidebar() {
                 key={lib.id}
                 library={lib}
                 isSelected={selectedLibraryId === lib.id}
-                isScanning={isScanning}
                 onSelect={handleSelect}
-                onRefresh={handleRefresh}
-                onRemove={handleRemove}
               />
             ))}
           </SortableContext>

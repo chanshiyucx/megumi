@@ -1,13 +1,18 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Cursor};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Parser, Subcommand};
-use image::imageops::FilterType;
+use fast_image_resize as fr;
+use image::ImageReader;
+use memmap2::Mmap;
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
+use turbojpeg::{Decompressor, Image as JpegImage, PixelFormat, ScalingFactor};
 const MANIFEST_FILE: &str = "manifest.json";
 const COMIC_MANIFEST_DIR: &str = "manifests";
 const STATE_FILE: &str = ".megumi/state.json";
@@ -16,6 +21,8 @@ const SCHEMA_VERSION: u32 = 3;
 const STATE_VERSION: u32 = 2;
 const IMAGE_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png"];
 const BOOK_EXTENSIONS: &[&str] = &["txt"];
+const PROGRESS_REPORT_INTERVAL: usize = 500;
+static THUMB_TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Parser)]
 #[command(name = "megumi-backend")]
@@ -48,6 +55,14 @@ struct BuildArgs {
     /// WebP quality for generated thumbnails.
     #[arg(long, default_value_t = 72)]
     thumbnail_quality: u8,
+
+    /// Maximum concurrent thumbnail workers. Defaults to a conservative CPU-based value.
+    #[arg(long)]
+    thumbnail_workers: Option<usize>,
+
+    /// Skip unreadable images instead of failing the build.
+    #[arg(long)]
+    skip_bad_images: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -81,7 +96,7 @@ enum LibraryKind {
 #[serde(rename_all = "camelCase")]
 struct ComicSummaryManifest {
     title: String,
-    cover_key: Option<String>,
+    cover_key: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -188,6 +203,89 @@ struct PendingOutput {
     output_path: PathBuf,
 }
 
+struct ProcessedImage {
+    page: PageManifest,
+    state_key: String,
+    state: FileState,
+}
+
+struct ThumbnailWorker {
+    decompressor: Option<Decompressor>,
+    resizer: fr::Resizer,
+}
+
+impl ThumbnailWorker {
+    fn new() -> Self {
+        Self {
+            decompressor: Decompressor::new().ok(),
+            resizer: fr::Resizer::new(),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct BuildProgress {
+    processed_images: AtomicUsize,
+    built_thumbnails: AtomicUsize,
+    reused_thumbnails: AtomicUsize,
+    skipped_images: AtomicUsize,
+    report_every: usize,
+}
+
+impl BuildProgress {
+    fn new(report_every: usize) -> Self {
+        Self {
+            processed_images: AtomicUsize::new(0),
+            built_thumbnails: AtomicUsize::new(0),
+            reused_thumbnails: AtomicUsize::new(0),
+            skipped_images: AtomicUsize::new(0),
+            report_every,
+        }
+    }
+
+    fn record_processed(&self, thumbnail_built: bool) {
+        if thumbnail_built {
+            self.built_thumbnails.fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.reused_thumbnails.fetch_add(1, Ordering::Relaxed);
+        }
+        self.report_if_due(self.processed_images.fetch_add(1, Ordering::Relaxed) + 1);
+    }
+
+    fn record_skipped(&self) {
+        self.skipped_images.fetch_add(1, Ordering::Relaxed);
+        self.report_if_due(self.processed_images.fetch_add(1, Ordering::Relaxed) + 1);
+    }
+
+    fn report_if_due(&self, processed: usize) {
+        if self.report_every > 0 && processed.is_multiple_of(self.report_every) {
+            eprintln!(
+                "processed {processed} images ({} thumbnails built, {} reused, {} skipped)",
+                self.built_thumbnails.load(Ordering::Relaxed),
+                self.reused_thumbnails.load(Ordering::Relaxed),
+                self.skipped_images.load(Ordering::Relaxed)
+            );
+        }
+    }
+
+    fn snapshot(&self) -> BuildProgressSnapshot {
+        BuildProgressSnapshot {
+            processed_images: self.processed_images.load(Ordering::Relaxed),
+            built_thumbnails: self.built_thumbnails.load(Ordering::Relaxed),
+            reused_thumbnails: self.reused_thumbnails.load(Ordering::Relaxed),
+            skipped_images: self.skipped_images.load(Ordering::Relaxed),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct BuildProgressSnapshot {
+    processed_images: usize,
+    built_thumbnails: usize,
+    reused_thumbnails: usize,
+    skipped_images: usize,
+}
+
 #[derive(Debug)]
 struct StagingDir {
     path: PathBuf,
@@ -243,8 +341,9 @@ struct BuildContext {
     previous_state: BuildState,
     next_state: BuildState,
     staging: StagingDir,
-    pending_thumbnails: Vec<PendingOutput>,
-    pending_comic_manifests: Vec<PendingOutput>,
+    pending_detail_manifests: Vec<PendingOutput>,
+    skip_bad_images: bool,
+    progress: BuildProgress,
 }
 
 fn main() -> Result<()> {
@@ -260,6 +359,12 @@ fn build(args: BuildArgs) -> Result<()> {
     }
     if args.thumbnail_quality > 100 {
         bail!("thumbnail quality must be between 0 and 100");
+    }
+    let thumbnail_workers = args
+        .thumbnail_workers
+        .unwrap_or_else(recommended_thumbnail_workers);
+    if thumbnail_workers == 0 {
+        bail!("thumbnail workers must be greater than zero");
     }
 
     let source = args
@@ -285,29 +390,52 @@ fn build(args: BuildArgs) -> Result<()> {
         previous_state,
         next_state: BuildState::default(),
         staging,
-        pending_thumbnails: Vec::new(),
-        pending_comic_manifests: Vec::new(),
+        pending_detail_manifests: Vec::new(),
+        skip_bad_images: args.skip_bad_images,
+        progress: BuildProgress::new(PROGRESS_REPORT_INTERVAL),
     };
 
-    let libraries = scan_libraries(&mut ctx)?;
+    let thumbnail_pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(thumbnail_workers)
+        .build()
+        .context("create thumbnail worker pool")?;
+    let libraries = thumbnail_pool.install(|| scan_libraries(&mut ctx))?;
     let manifest = Manifest {
         schema_version: SCHEMA_VERSION,
         generated_at: now_rfc3339()?,
         libraries,
     };
 
-    commit_staged_outputs(&mut ctx.pending_thumbnails)?;
-    commit_staged_outputs(&mut ctx.pending_comic_manifests)?;
+    commit_staged_outputs(&mut ctx.pending_detail_manifests)?;
     write_manifest_if_changed(&ctx.output.join(MANIFEST_FILE), &manifest)?;
     cleanup_removed_outputs(&ctx)?;
     write_json_if_changed(&ctx.output.join(STATE_FILE), &ctx.next_state)?;
 
+    let progress = ctx.progress.snapshot();
     println!(
-        "built {} with {} tracked source files",
+        "built {} with {} tracked source files; processed {} images ({} thumbnails built, {} reused, {} skipped)",
         ctx.output.join(MANIFEST_FILE).display(),
-        ctx.next_state.files.len()
+        ctx.next_state.files.len(),
+        progress.processed_images,
+        progress.built_thumbnails,
+        progress.reused_thumbnails,
+        progress.skipped_images
     );
     Ok(())
+}
+
+fn recommended_thumbnail_workers() -> usize {
+    let logical = std::thread::available_parallelism()
+        .map(usize::from)
+        .unwrap_or(1);
+    let physical = num_cpus::get_physical();
+    let baseline = if physical == 0 {
+        logical
+    } else {
+        logical.min(physical)
+    };
+
+    (baseline / 2).clamp(1, 6)
 }
 
 fn scan_libraries(ctx: &mut BuildContext) -> Result<Vec<LibraryManifest>> {
@@ -364,12 +492,39 @@ fn scan_comic(
     let rel = relative_key(&ctx.source, comic_dir)?;
     let title = display_name(comic_dir);
 
-    let mut pages = Vec::with_capacity(image_paths.len());
-    for image_path in image_paths {
-        pages.push(process_image(ctx, &image_path)?);
+    let processed_images = image_paths
+        .par_iter()
+        .map_init(ThumbnailWorker::new, |worker, image_path| {
+            process_image(ctx, image_path, worker)
+                .map(Some)
+                .or_else(|error| {
+                    if ctx.skip_bad_images {
+                        ctx.progress.record_skipped();
+                        eprintln!(
+                            "skipped unreadable image {}: {error:#}",
+                            image_path.display()
+                        );
+                        Ok(None)
+                    } else {
+                        Err(error)
+                    }
+                })
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    let mut pages = Vec::with_capacity(processed_images.len());
+    for processed in processed_images.into_iter().flatten() {
+        ctx.next_state
+            .files
+            .insert(processed.state_key, processed.state);
+        pages.push(processed.page);
     }
 
-    let cover_key = pages.first().map(|page| page.thumbnail_key.clone());
+    if pages.is_empty() {
+        bail!("comic has no readable pages: {}", comic_dir.display());
+    }
+
+    let cover_key = pages[0].thumbnail_key.clone();
     let detail_key = detail_manifest_key_for(&rel);
     let comic_state = ComicState {
         detail_key: detail_key.clone(),
@@ -390,7 +545,7 @@ fn scan_comic(
             &ctx.output,
             &detail_key,
             &manifest,
-            &mut ctx.pending_comic_manifests,
+            &mut ctx.pending_detail_manifests,
         )?;
     }
 
@@ -432,7 +587,11 @@ fn scan_author(
     Ok(AuthorManifest { name, books })
 }
 
-fn process_image(ctx: &mut BuildContext, source_path: &Path) -> Result<PageManifest> {
+fn process_image(
+    ctx: &BuildContext,
+    source_path: &Path,
+    worker: &mut ThumbnailWorker,
+) -> Result<ProcessedImage> {
     let rel = relative_key(&ctx.source, source_path)?;
     let metadata = source_path
         .metadata()
@@ -453,41 +612,37 @@ fn process_image(ctx: &mut BuildContext, source_path: &Path) -> Result<PageManif
             && state.height.is_some()
     });
 
-    let (width, height) = if unchanged {
+    let (width, height, thumbnail_built) = if unchanged {
         let state = previous.expect("checked above");
-        (state.width.unwrap_or(0), state.height.unwrap_or(0))
+        (state.width.unwrap_or(0), state.height.unwrap_or(0), false)
     } else {
-        let staged_thumb = ctx.staging.path.join(&thumbnail_key);
-        let dimensions = create_thumbnail(
+        let (width, height) = create_thumbnail(
             source_path,
-            &staged_thumb,
+            &output_thumb,
             ctx.thumbnail_width,
             ctx.thumbnail_quality,
+            worker,
         )?;
-        ctx.pending_thumbnails.push(PendingOutput {
-            staged_path: staged_thumb,
-            output_path: output_thumb.clone(),
-        });
-        dimensions
+        (width, height, true)
     };
+    ctx.progress.record_processed(thumbnail_built);
 
-    ctx.next_state.files.insert(
-        rel.clone(),
-        FileState {
+    Ok(ProcessedImage {
+        page: PageManifest {
+            key: key.clone(),
+            thumbnail_key: thumbnail_key.clone(),
+            width,
+            height,
+            mtime_ms,
+        },
+        state_key: rel,
+        state: FileState {
             size,
             mtime_ms,
-            thumbnail_key: Some(thumbnail_key.clone()),
+            thumbnail_key: Some(thumbnail_key),
             width: Some(width),
             height: Some(height),
         },
-    );
-
-    Ok(PageManifest {
-        key: key.clone(),
-        thumbnail_key: thumbnail_key.clone(),
-        width,
-        height,
-        mtime_ms,
     })
 }
 
@@ -544,7 +699,7 @@ fn process_book(ctx: &mut BuildContext, source_path: &Path) -> Result<BookManife
             &ctx.output,
             &detail_key,
             &manifest,
-            &mut ctx.pending_comic_manifests,
+            &mut ctx.pending_detail_manifests,
         )?;
     }
 
@@ -701,30 +856,149 @@ fn create_thumbnail(
     dest: &Path,
     target_width: u32,
     quality: u8,
+    worker: &mut ThumbnailWorker,
 ) -> Result<(u32, u32)> {
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("create directory: {}", parent.display()))?;
     }
 
-    let image =
-        image::open(source).with_context(|| format!("decode image: {}", source.display()))?;
+    let file = File::open(source).with_context(|| format!("open image: {}", source.display()))?;
+    // SAFETY: the mapping is read-only and scoped to this function while the file handle is alive.
+    let mmap = unsafe { Mmap::map(&file) }
+        .with_context(|| format!("memory-map image: {}", source.display()))?;
+
+    let (pixels, src_width, src_height, original_width, original_height) = if is_jpeg(&mmap)
+        && let Some(decompressor) = worker.decompressor.as_mut()
+    {
+        decode_jpeg_for_thumbnail(&mmap, decompressor, target_width)
+            .or_else(|_| decode_image_for_thumbnail(&mmap))
+            .with_context(|| format!("decode image: {}", source.display()))?
+    } else {
+        decode_image_for_thumbnail(&mmap)
+            .with_context(|| format!("decode image: {}", source.display()))?
+    };
+
+    let target_height = thumbnail_height(original_width, original_height, target_width)?;
+    let resized = resize_rgb(
+        pixels,
+        src_width,
+        src_height,
+        target_width,
+        target_height,
+        &mut worker.resizer,
+    )?;
+
+    let seq = THUMB_TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let tmp = dest.with_extension(format!("webp.{}.{seq}.tmp", std::process::id()));
+    let encoder = webp::Encoder::from_rgb(&resized, target_width, target_height);
+    let encoded = encoder.encode(f32::from(quality));
+    if let Err(error) = fs::write(&tmp, &*encoded)
+        .with_context(|| format!("write temporary thumbnail: {}", tmp.display()))
+    {
+        let _ = fs::remove_file(&tmp);
+        return Err(error);
+    }
+    if let Err(error) =
+        fs::rename(&tmp, dest).with_context(|| format!("write thumbnail: {}", dest.display()))
+    {
+        let _ = fs::remove_file(&tmp);
+        return Err(error);
+    }
+    Ok((original_width, original_height))
+}
+
+fn is_jpeg(data: &[u8]) -> bool {
+    data.len() >= 3 && data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF
+}
+
+fn decode_jpeg_for_thumbnail(
+    data: &[u8],
+    decompressor: &mut Decompressor,
+    target_width: u32,
+) -> Result<(Vec<u8>, u32, u32, u32, u32)> {
+    let header = decompressor.read_header(data)?;
+    let original_width: u32 = header
+        .width
+        .try_into()
+        .map_err(|_| anyhow!("JPEG width overflow"))?;
+    let original_height: u32 = header
+        .height
+        .try_into()
+        .map_err(|_| anyhow!("JPEG height overflow"))?;
+    let scale_ratio = original_width / target_width.max(1);
+    let (num, denom) = match scale_ratio {
+        ratio if ratio >= 8 => (1, 8),
+        ratio if ratio >= 4 => (1, 4),
+        ratio if ratio >= 2 => (1, 2),
+        _ => (1, 1),
+    };
+
+    let scaled_width = (header.width * num).div_ceil(denom);
+    let scaled_height = (header.height * num).div_ceil(denom);
+    let pitch = scaled_width * 3;
+    let mut pixels = vec![0u8; pitch * scaled_height];
+    let image = JpegImage {
+        pixels: &mut pixels[..],
+        width: scaled_width,
+        pitch,
+        height: scaled_height,
+        format: PixelFormat::RGB,
+    };
+
+    decompressor.set_scaling_factor(ScalingFactor::new(num, denom))?;
+    decompressor.decompress(data, image)?;
+
+    Ok((
+        pixels,
+        scaled_width
+            .try_into()
+            .map_err(|_| anyhow!("scaled JPEG width overflow"))?,
+        scaled_height
+            .try_into()
+            .map_err(|_| anyhow!("scaled JPEG height overflow"))?,
+        original_width,
+        original_height,
+    ))
+}
+
+fn decode_image_for_thumbnail(data: &[u8]) -> Result<(Vec<u8>, u32, u32, u32, u32)> {
+    let image = ImageReader::new(Cursor::new(data))
+        .with_guessed_format()?
+        .decode()?;
     let width = image.width();
     let height = image.height();
-    let target_height = ((height as u64 * target_width as u64) / width.max(1) as u64)
+    Ok((image.into_rgb8().into_raw(), width, height, width, height))
+}
+
+fn thumbnail_height(width: u32, height: u32, target_width: u32) -> Result<u32> {
+    if width == 0 {
+        bail!("image width is zero");
+    }
+    ((height as u64 * target_width as u64) / width as u64)
         .max(1)
         .try_into()
-        .map_err(|_| anyhow!("thumbnail height overflow for {}", source.display()))?;
-    let resized = image.resize_exact(target_width, target_height, FilterType::Triangle);
-    let rgb = resized.to_rgb8();
+        .map_err(|_| anyhow!("thumbnail height overflow"))
+}
 
-    let tmp = dest.with_extension(format!("webp.{}.tmp", std::process::id()));
-    let encoder = webp::Encoder::from_rgb(&rgb, rgb.width(), rgb.height());
-    let encoded = encoder.encode(f32::from(quality));
-    fs::write(&tmp, &*encoded)
-        .with_context(|| format!("write temporary thumbnail: {}", tmp.display()))?;
-    fs::rename(&tmp, dest).with_context(|| format!("write thumbnail: {}", dest.display()))?;
-    Ok((width, height))
+fn resize_rgb(
+    pixels: Vec<u8>,
+    src_width: u32,
+    src_height: u32,
+    target_width: u32,
+    target_height: u32,
+    resizer: &mut fr::Resizer,
+) -> Result<Vec<u8>> {
+    let src_image =
+        fr::images::Image::from_vec_u8(src_width, src_height, pixels, fr::PixelType::U8x3)
+            .map_err(|error| anyhow!("create resize source buffer: {error}"))?;
+    let mut dst_image = fr::images::Image::new(target_width, target_height, fr::PixelType::U8x3);
+    let options =
+        fr::ResizeOptions::new().resize_alg(fr::ResizeAlg::Convolution(fr::FilterType::Bilinear));
+    resizer
+        .resize(&src_image, &mut dst_image, Some(&options))
+        .map_err(|error| anyhow!("resize image: {error}"))?;
+    Ok(dst_image.into_vec())
 }
 
 fn load_build_state(output: &Path) -> Result<BuildState> {
@@ -1089,11 +1363,19 @@ mod tests {
             output: None,
             thumbnail_width: 16,
             thumbnail_quality: 72,
+            thumbnail_workers: Some(2),
+            skip_bad_images: false,
         }
     }
 
     fn build_test_library(source: &Path) {
         build(test_build_args(source)).unwrap();
+    }
+
+    fn build_test_library_skipping_bad_images(source: &Path) {
+        let mut args = test_build_args(source);
+        args.skip_bad_images = true;
+        build(args).unwrap();
     }
 
     fn write_test_image(path: &Path, color: [u8; 3]) {
@@ -1348,7 +1630,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_build_discards_staged_thumbnails_and_preserves_published_state() {
+    fn failed_build_keeps_immediate_thumbnails_but_preserves_manifests_and_state() {
         let temp = TestDir::new();
         let source = &temp.0;
         let first_page = source.join("Comics/One/001.png");
@@ -1369,7 +1651,7 @@ mod tests {
 
         let error = build(test_build_args(source)).unwrap_err().to_string();
         assert!(error.contains("decode image"));
-        assert_eq!(fs::read(thumbnail).unwrap(), before_thumbnail);
+        assert_ne!(fs::read(thumbnail).unwrap(), before_thumbnail);
         assert_eq!(
             fs::read(source.join(MANIFEST_FILE)).unwrap(),
             before_manifest
@@ -1385,5 +1667,30 @@ mod tests {
             .filter(|entry| entry.file_name().to_string_lossy().starts_with("staging-"))
             .count();
         assert_eq!(staging_leftovers, 0);
+    }
+
+    #[test]
+    fn skip_bad_images_omits_unreadable_pages_when_requested() {
+        let temp = TestDir::new();
+        let source = &temp.0;
+        let good_page = source.join("Comics/One/001.png");
+        let bad_page = source.join("Comics/One/002.png");
+        write_test_image(&good_page, [255, 0, 0]);
+        fs::create_dir_all(bad_page.parent().unwrap()).unwrap();
+        fs::write(&bad_page, "invalid image").unwrap();
+
+        build_test_library_skipping_bad_images(source);
+
+        let detail: serde_json::Value =
+            serde_json::from_slice(&fs::read(source.join("manifests/Comics/One.json")).unwrap())
+                .unwrap();
+        let pages = detail["pages"].as_array().unwrap();
+        assert_eq!(pages.len(), 1);
+        assert_eq!(pages[0]["key"], "Comics/One/001.png");
+
+        let state: serde_json::Value =
+            serde_json::from_slice(&fs::read(source.join(STATE_FILE)).unwrap()).unwrap();
+        assert!(state["files"].get("Comics/One/001.png").is_some());
+        assert!(state["files"].get("Comics/One/002.png").is_none());
     }
 }

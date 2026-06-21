@@ -20,7 +20,7 @@ export function ThemeSwitcher() {
   const setTheme = useUIStore((s) => s.setTheme)
 
   return (
-    <div className="bg-overlay flex h-8 items-center justify-evenly gap-1 rounded-full">
+    <div className="bg-overlay flex h-8 min-w-0 flex-1 items-center justify-evenly gap-1 rounded-full">
       {themes.map(({ mode, icon: Icon, label }) => {
         const isActive = theme === mode
         return (

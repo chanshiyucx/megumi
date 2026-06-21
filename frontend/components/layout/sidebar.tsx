@@ -198,7 +198,7 @@ export function Sidebar() {
         </DndContext>
       </ScrollArea>
 
-      <div className="flex items-center gap-2 p-4">
+      <div className="flex w-full shrink-0 items-center gap-2 p-4">
         <ThemeSwitcher />
         {isStandalone && (
           <Button

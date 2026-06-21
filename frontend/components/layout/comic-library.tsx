@@ -215,8 +215,8 @@ export function ComicLibrary({ selectedLibrary }: ComicLibraryProps) {
       </div>
 
       <div className={cn('min-h-0 flex-1 flex-col', readerClass)}>
-        <div className="bg-base text-subtle relative flex h-8 items-center justify-between border-b px-3 text-xs">
-          <div className="flex gap-2">
+        <div className="bg-base text-subtle relative grid h-8 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 overflow-hidden border-b px-3 text-xs">
+          <div className="flex shrink-0 gap-2">
             <Button
               className="h-6 w-6"
               onClick={toggleViewMode}
@@ -266,11 +266,11 @@ export function ComicLibrary({ selectedLibrary }: ComicLibraryProps) {
             )}
           </div>
 
-          <h3 className="absolute top-1/2 left-1/2 max-w-[60%] -translate-1/2 truncate text-center">
+          <h3 className="min-w-0 truncate text-left" title={comic?.title}>
             {comic?.title}
           </h3>
 
-          <span>
+          <span className="shrink-0 whitespace-nowrap">
             {currentIndex + 1} / {images.length}
           </span>
         </div>

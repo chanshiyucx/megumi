@@ -305,7 +305,7 @@ export function BookReader({ bookId, showReading = false }: BookReaderProps) {
         />
       )}
 
-      <div className="bg-base text-subtle relative flex h-8 items-center justify-between border-b px-3 text-xs">
+      <div className="bg-base text-subtle relative grid h-8 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 overflow-hidden border-b px-3 text-xs">
         <div className="flex shrink-0 gap-2">
           <Button
             className="hover:bg-overlay h-6 w-6 bg-transparent"
@@ -357,7 +357,10 @@ export function BookReader({ bookId, showReading = false }: BookReaderProps) {
           </Button>
         </div>
 
-        <h3 className="mx-2 min-w-0 flex-1 truncate text-left">
+        <h3
+          className="min-w-0 truncate text-left"
+          title={currentChapterTitle || book.title}
+        >
           {currentChapterTitle || book.title}
         </h3>
 

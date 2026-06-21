@@ -177,13 +177,13 @@ export function ComicReader({ comicId }: ComicReaderProps) {
       />
       <div
         className={cn(
-          'bg-base text-subtle relative flex h-8 w-full items-center justify-between border-b px-3 text-xs',
+          'bg-base text-subtle relative grid h-8 w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 overflow-hidden border-b px-3 text-xs',
           isImmersive && 'hidden',
         )}
       >
         <div className="flex shrink-0 gap-2">
           <Button
-            className="hover:bg-overlay mx-1 h-6 w-6 bg-transparent"
+            className="hover:bg-overlay h-6 w-6 bg-transparent"
             onClick={toggleToc}
             onMouseDown={(e) => {
               e.stopPropagation()
@@ -220,7 +220,7 @@ export function ComicReader({ comicId }: ComicReaderProps) {
           </Button>
         </div>
 
-        <h3 className="mx-2 min-w-0 flex-1 truncate text-left">
+        <h3 className="min-w-0 truncate text-left" title={comic.title}>
           {comic.title}
         </h3>
 

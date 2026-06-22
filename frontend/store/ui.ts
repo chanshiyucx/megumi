@@ -7,7 +7,7 @@ import {
 import { immer } from 'zustand/middleware/immer'
 import type { LibraryNavStatus } from '@/types/library'
 
-export type ThemeMode = 'light' | 'dark' | 'system'
+export type ThemeMode = 'light' | 'dark'
 
 interface UIState {
   isSidebarCollapsed: boolean
@@ -35,15 +35,12 @@ interface PersistedUIState {
   navStatus: Record<string, LibraryNavStatus>
 }
 
+const sanitizeThemeMode = (theme: unknown): ThemeMode =>
+  theme === 'dark' ? 'dark' : 'light'
+
 const applyTheme = (theme: ThemeMode) => {
   if (typeof window === 'undefined') return
-  const resolved =
-    theme === 'system'
-      ? window.matchMedia('(prefers-color-scheme: dark)').matches
-        ? 'dark'
-        : 'light'
-      : theme
-  document.documentElement.setAttribute('data-theme', resolved)
+  document.documentElement.setAttribute('data-theme', sanitizeThemeMode(theme))
 }
 
 let cleanupThemeSync: (() => void) | null = null
@@ -52,17 +49,17 @@ export function initializeThemeSync() {
   if (typeof window === 'undefined') return () => {}
   if (cleanupThemeSync) return cleanupThemeSync
 
-  applyTheme(useUIStore.getState().theme)
-  const unsubscribeTheme = useUIStore.subscribe((state) => state.theme, applyTheme)
-  const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)')
-  const handleSystemThemeChange = () => {
-    if (useUIStore.getState().theme === 'system') applyTheme('system')
+  const currentTheme = useUIStore.getState().theme
+  const sanitizedTheme = sanitizeThemeMode(currentTheme)
+  if (currentTheme !== sanitizedTheme) {
+    useUIStore.setState({ theme: sanitizedTheme })
+  } else {
+    applyTheme(sanitizedTheme)
   }
-  mediaQuery.addEventListener('change', handleSystemThemeChange)
+  const unsubscribeTheme = useUIStore.subscribe((state) => state.theme, applyTheme)
 
   cleanupThemeSync = () => {
     unsubscribeTheme()
-    mediaQuery.removeEventListener('change', handleSystemThemeChange)
     cleanupThemeSync = null
   }
 
@@ -76,7 +73,7 @@ export const useUIStore = create<UIState>()(
         isSidebarCollapsed: false,
         isMiddleCollapsed: false,
         isImmersive: false,
-        theme: 'system',
+        theme: 'light',
         selectedLibraryId: null,
         navStatus: {},
         toggleSidebar: () =>
@@ -93,7 +90,7 @@ export const useUIStore = create<UIState>()(
           set((state) => {
             state.isImmersive = !state.isImmersive
           }),
-        setTheme: (theme) => set({ theme }),
+        setTheme: (theme) => set({ theme: sanitizeThemeMode(theme) }),
         setSelectedLibraryId: (id) => set({ selectedLibraryId: id }),
         setNavStatus: (libraryId, status) =>
           set((state) => {

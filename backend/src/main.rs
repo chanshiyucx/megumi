@@ -18,8 +18,8 @@ const COMIC_MANIFEST_DIR: &str = "manifests";
 const STATE_FILE: &str = ".megumi/state.json";
 const TAGS_FILE: &str = ".megumi/tags.json";
 const THUMBNAIL_DIR: &str = "thumbnail";
-const SCHEMA_VERSION: u32 = 3;
-const STATE_VERSION: u32 = 2;
+const SCHEMA_VERSION: u32 = 4;
+const STATE_VERSION: u32 = 3;
 const IMAGE_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png"];
 const BOOK_EXTENSIONS: &[&str] = &["txt"];
 const PROGRESS_REPORT_INTERVAL: usize = 500;
@@ -110,6 +110,8 @@ enum LibraryKind {
 struct ComicSummaryManifest {
     title: String,
     cover_key: String,
+    cover_mtime_ms: u64,
+    detail_version: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -142,6 +144,7 @@ struct AuthorManifest {
 struct BookManifest {
     title: String,
     key: String,
+    mtime_ms: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -769,10 +772,12 @@ fn scan_comic(
     }
 
     let cover_key = pages[0].thumbnail_key.clone();
+    let cover_mtime_ms = pages[0].mtime_ms;
     let detail_key = detail_manifest_key_for(&rel);
+    let detail_version = comic_fingerprint(&pages, &ctx.next_state.files)?;
     let comic_state = ComicState {
         detail_key: detail_key.clone(),
-        fingerprint: comic_fingerprint(&pages, &ctx.next_state.files)?,
+        fingerprint: detail_version.clone(),
     };
     let detail_unchanged = ctx.previous_state.comics.get(&rel) == Some(&comic_state)
         && ctx.output.join(&detail_key).is_file();
@@ -793,7 +798,12 @@ fn scan_comic(
         )?;
     }
 
-    Ok(ComicSummaryManifest { title, cover_key })
+    Ok(ComicSummaryManifest {
+        title,
+        cover_key,
+        cover_mtime_ms,
+        detail_version,
+    })
 }
 
 fn scan_book_library(ctx: &mut BuildContext, library_dir: &Path) -> Result<Vec<AuthorManifest>> {
@@ -938,7 +948,11 @@ fn process_book(ctx: &mut BuildContext, source_path: &Path) -> Result<BookManife
         )?;
     }
 
-    Ok(BookManifest { title, key })
+    Ok(BookManifest {
+        title,
+        key,
+        mtime_ms,
+    })
 }
 
 struct BookChapterScan {
@@ -1247,7 +1261,11 @@ fn load_build_state(output: &Path) -> Result<BuildState> {
         serde_json::from_slice(&raw).with_context(|| format!("parse state: {}", path.display()))?;
 
     let version = value.get("version");
-    if version.is_none() || version.and_then(serde_json::Value::as_u64) == Some(1) {
+    if version.is_none()
+        || version
+            .and_then(serde_json::Value::as_u64)
+            .is_some_and(|version| version < u64::from(STATE_VERSION))
+    {
         clear_managed_outputs(output)?;
         fs::remove_file(&path)
             .with_context(|| format!("remove legacy state: {}", path.display()))?;
@@ -1858,7 +1876,7 @@ mod tests {
 
         let manifest: serde_json::Value =
             serde_json::from_slice(&fs::read(root_manifest).unwrap()).unwrap();
-        assert_eq!(manifest["schemaVersion"], 3);
+        assert_eq!(manifest["schemaVersion"], SCHEMA_VERSION);
         assert!(manifest.get("sourceRoot").is_none());
         assert!(manifest.get("publicBaseUrl").is_none());
         let libraries = manifest["libraries"].as_array().unwrap();
@@ -1876,6 +1894,12 @@ mod tests {
         assert!(comics["comics"][0].get("detailKey").is_none());
         assert!(comics["comics"][0].get("coverThumbnailKey").is_none());
         assert!(comics["comics"][0].get("coverKey").is_some());
+        assert!(comics["comics"][0]["coverMtimeMs"].as_u64().is_some());
+        assert!(
+            comics["comics"][0]["detailVersion"]
+                .as_str()
+                .is_some_and(|value| value.len() == 16)
+        );
         let books = libraries
             .iter()
             .find(|library| library["kind"] == "book")
@@ -1893,7 +1917,11 @@ mod tests {
         assert!(books[1].get("id").is_none());
         assert!(books[1].get("url").is_none());
         assert!(books[1].get("size").is_none());
-        assert!(books[1].get("mtimeMs").is_none());
+        assert!(books[1]["mtimeMs"].as_u64().is_some());
+        assert_eq!(
+            books[1]["mtimeMs"],
+            modified_ms(&author.join("Two.txt").metadata().unwrap()).unwrap()
+        );
         assert!(books[1].get("chapters").is_none());
         assert!(books[1].get("detailKey").is_none());
 
@@ -1901,7 +1929,7 @@ mod tests {
             &fs::read(source.join("manifests/Books/Author/Two.json")).unwrap(),
         )
         .unwrap();
-        assert_eq!(book_detail["schemaVersion"], 3);
+        assert_eq!(book_detail["schemaVersion"], SCHEMA_VERSION);
         assert_eq!(book_detail["title"], "Two");
         assert!(book_detail.get("mtimeMs").is_none());
         assert_eq!(book_detail["lineCount"], 4);
@@ -1916,7 +1944,7 @@ mod tests {
         let detail: serde_json::Value =
             serde_json::from_slice(&fs::read(source.join("manifests/Comics/Two.json")).unwrap())
                 .unwrap();
-        assert_eq!(detail["schemaVersion"], 3);
+        assert_eq!(detail["schemaVersion"], SCHEMA_VERSION);
         assert_eq!(detail["title"], "Two");
         assert!(detail.get("id").is_none());
         assert!(detail.get("path").is_none());
@@ -1924,6 +1952,10 @@ mod tests {
         assert!(detail["pages"][0].get("url").is_none());
         assert!(detail["pages"][0].get("index").is_none());
         assert!(detail["pages"][0].get("filename").is_none());
+        assert_eq!(
+            comics["comics"][0]["coverMtimeMs"],
+            detail["pages"][0]["mtimeMs"]
+        );
     }
 
     #[test]

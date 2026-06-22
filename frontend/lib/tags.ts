@@ -51,12 +51,12 @@ export function chapterTagId(bookTitle: string, chapterTitle: string) {
 }
 
 export async function fetchRemoteTags({
-  cache = 'no-cache',
+  cache,
 }: FetchRemoteTagsOptions = {}): Promise<RemoteTags> {
   const baseUrl = tagsApiUrl()
   if (!baseUrl) return EMPTY_TAGS
 
-  const response = await fetch(`${baseUrl}/tags`, { cache })
+  const response = await fetch(`${baseUrl}/tags`, cache ? { cache } : undefined)
   if (response.status === 404) return EMPTY_TAGS
   if (!response.ok) {
     throw new Error(`HTTP ${response.status} for ${baseUrl}/tags`)

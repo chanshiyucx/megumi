@@ -67,8 +67,11 @@ export function useComicReadingSession({
     index: number
   } | null>(null)
   const [previewIndex, setPreviewIndex] = useState(-1)
-  const currentIndex =
+  const rawCurrentIndex =
     localPosition?.comicId === comicId ? localPosition.index : savedIndex
+  const currentIndex = images.length
+    ? clampIndex(rawCurrentIndex, images.length)
+    : rawCurrentIndex
   const currentIndexRef = useRef(currentIndex)
   const hoveredIndexRef = useRef<number | null>(null)
   const throttledUpdateProgress = useThrottledProgress(updateComicProgress)
@@ -100,6 +103,16 @@ export function useComicReadingSession({
     if (!comic || !images.length) return
     updateComicProgress(comic.id, createComicProgress(index, images.length))
   }
+
+  useEffect(() => {
+    if (!comic || !images.length) return
+    const nextIndex = clampIndex(rawCurrentIndex, images.length)
+    if (nextIndex === rawCurrentIndex) return
+    updateComicProgress(
+      comic.id,
+      createComicProgress(nextIndex, images.length),
+    )
+  }, [comic, images.length, rawCurrentIndex, updateComicProgress])
 
   const jumpTo = (index?: number) => {
     if (!comic || !images.length) return

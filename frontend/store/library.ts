@@ -20,6 +20,7 @@ import type {
   FileTags,
   Image,
   Library,
+  LibraryType,
 } from '@/types/library'
 
 const collator = new Intl.Collator(undefined, {
@@ -40,6 +41,15 @@ interface HydrateOptions {
   force?: boolean
 }
 
+interface ResourceLoadOptions {
+  force?: boolean
+}
+
+interface CurrentResource {
+  type: LibraryType
+  id: string
+}
+
 interface LibraryState {
   libraries: Record<string, Library>
   comics: Record<string, Comic>
@@ -52,12 +62,20 @@ interface LibraryState {
   comicSources: Record<string, RemoteComicSource>
   bookSources: Record<string, RemoteBookSource>
   bookChapterStatus: Record<string, LoadStatus>
+  bookRefreshTokens: Record<string, number>
   loadStatus: LoadStatus
   loadError?: string
   hydrate: (options?: HydrateOptions) => Promise<void>
+  refreshCurrentResource: () => Promise<void>
   reorderLibrary: (orderedIds: string[]) => void
-  getComicImages: (comicId: string) => Promise<Image[]>
-  getBookChapters: (bookId: string) => Promise<Book['chapters']>
+  getComicImages: (
+    comicId: string,
+    options?: ResourceLoadOptions,
+  ) => Promise<Image[]>
+  getBookChapters: (
+    bookId: string,
+    options?: ResourceLoadOptions,
+  ) => Promise<Book['chapters']>
   updateBookTags: (bookId: string, tags: FileTags) => Promise<void>
   updateComicTags: (comicId: string, tags: FileTags) => Promise<void>
   updateComicImageTags: (
@@ -279,6 +297,29 @@ function pruneTabsForCatalog(
   }
 }
 
+function resolveCurrentResource(state: LibraryState): CurrentResource | null {
+  const { activeTab, tabs } = useTabsStore.getState()
+  const active = tabs.find((tab) => tab.id === activeTab)
+  if (active) return { type: active.type, id: active.id }
+
+  const ui = useUIStore.getState()
+  const selectedLibraryId = ui.selectedLibraryId
+  if (!selectedLibraryId) return null
+
+  const library = state.libraries[selectedLibraryId]
+  const navStatus = ui.navStatus[selectedLibraryId]
+  if (!library || !navStatus) return null
+
+  if (library.type === 'comic' && navStatus.comicId) {
+    return { type: library.type, id: navStatus.comicId }
+  }
+  if (library.type === 'book' && navStatus.bookId) {
+    return { type: library.type, id: navStatus.bookId }
+  }
+
+  return null
+}
+
 export const useLibraryStore = create<LibraryState>()(
   immer((set, get) => ({
     libraries: {},
@@ -292,6 +333,7 @@ export const useLibraryStore = create<LibraryState>()(
     comicSources: {},
     bookSources: {},
     bookChapterStatus: {},
+    bookRefreshTokens: {},
     loadStatus: 'idle',
 
     hydrate: async ({ force = false }: HydrateOptions = {}) => {
@@ -309,7 +351,7 @@ export const useLibraryStore = create<LibraryState>()(
         try {
           const catalog = await fetchRemoteCatalog({
             allowEmptyTagsFallback: !wasReady,
-            cache: force ? 'no-store' : 'no-cache',
+            cache: force ? 'no-store' : undefined,
           })
           if (seq !== hydrateSeq) return
           latestTags = catalog.tags
@@ -345,6 +387,25 @@ export const useLibraryStore = create<LibraryState>()(
       return hydrateLoad
     },
 
+    refreshCurrentResource: async () => {
+      const target = resolveCurrentResource(get())
+      await get().hydrate({ force: true })
+      if (!target) return
+
+      const state = get()
+      if (target.type === 'comic') {
+        if (!state.comics[target.id]) return
+        await get().getComicImages(target.id, { force: true })
+        return
+      }
+
+      if (!state.books[target.id]) return
+      set((state) => {
+        state.bookRefreshTokens[target.id] =
+          (state.bookRefreshTokens[target.id] ?? 0) + 1
+      })
+    },
+
     reorderLibrary: (orderedIds) => {
       const nextOrder = normalizeLibraryOrder(get().libraries, orderedIds)
       set((state) => {
@@ -352,12 +413,12 @@ export const useLibraryStore = create<LibraryState>()(
       })
       writeStoredLibraryOrder(nextOrder)
     },
-    getBookChapters: async (bookId) => {
+    getBookChapters: async (bookId, { force = false }: ResourceLoadOptions = {}) => {
       const book = get().books[bookId]
       const source = get().bookSources[bookId]
       if (!book || !source) return []
       const status = get().bookChapterStatus[bookId] ?? 'idle'
-      if (status === 'ready') return book.chapters
+      if (!force && status === 'ready') return book.chapters
       const existingLoad = bookChapterLoads.get(bookId)
       if (existingLoad) return existingLoad
 
@@ -368,6 +429,7 @@ export const useLibraryStore = create<LibraryState>()(
       const load = (async () => {
         try {
           const chapters = await fetchRemoteBookChapters(source, {
+            cache: force ? 'no-store' : undefined,
             tags: latestTags ?? undefined,
           })
           set((state) => {
@@ -516,11 +578,11 @@ export const useLibraryStore = create<LibraryState>()(
       }
     },
 
-    getComicImages: async (comicId) => {
+    getComicImages: async (comicId, { force = false }: ResourceLoadOptions = {}) => {
       const item = get().comicImages[comicId]
       const source = get().comicSources[comicId]
       if (!item || !source) return []
-      if (item.status === 'ready' || item.status === 'empty') {
+      if (!force && (item.status === 'ready' || item.status === 'empty')) {
         return item.images
       }
       const existingLoad = comicImageLoads.get(comicId)
@@ -536,6 +598,7 @@ export const useLibraryStore = create<LibraryState>()(
       const load = (async () => {
         try {
           const images = await fetchRemoteComicImages(source, {
+            cache: force ? 'no-store' : undefined,
             tags: latestTags ?? undefined,
           })
           set((state) => {

@@ -113,7 +113,7 @@ export function Sidebar() {
   const { openMiddle } = usePanelNav();
 
   const libraries = useLibraryStore((s) => s.libraries);
-  const hydrate = useLibraryStore((s) => s.hydrate);
+  const refreshCurrentResource = useLibraryStore((s) => s.refreshCurrentResource);
   const reorderLibrary = useLibraryStore((s) => s.reorderLibrary);
 
   const librariesList = Object.values(libraries).sort(
@@ -170,7 +170,7 @@ export function Sidebar() {
       </ScrollArea>
 
       <div className="flex w-full shrink-0 items-center gap-2 p-4">
-        <ThemeSwitcher onRefresh={() => void hydrate({ force: true })} />
+        <ThemeSwitcher onRefresh={() => void refreshCurrentResource()} />
       </div>
     </aside>
   );

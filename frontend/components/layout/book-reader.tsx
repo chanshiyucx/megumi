@@ -138,6 +138,9 @@ export function BookReader({ bookId, showReading = false }: BookReaderProps) {
     (s) => s.updateBookChapterTags,
   )
   const getBookChapters = useLibraryStore((s) => s.getBookChapters)
+  const bookRefreshToken = useLibraryStore(
+    (s) => s.bookRefreshTokens[bookId] ?? 0,
+  )
   const activeTab = useTabsStore((s) => s.activeTab)
   const addTab = useTabsStore((s) => s.addTab)
   const setActiveTab = useTabsStore((s) => s.setActiveTab)
@@ -152,6 +155,7 @@ export function BookReader({ bookId, showReading = false }: BookReaderProps) {
 
   const { isLock, lockScroll } = useScrollLock()
   const throttledUpdateProgress = useThrottledProgress(updateBookProgress)
+  const refreshTokenRef = useRef({ bookId, token: bookRefreshToken })
 
   const jumpTo = (targetIndex?: number) => {
     if (!content) return
@@ -175,16 +179,26 @@ export function BookReader({ bookId, showReading = false }: BookReaderProps) {
   useEffect(() => {
     if (!book?.path) return
 
+    const previousRefresh = refreshTokenRef.current
+    const force =
+      previousRefresh.bookId === bookId &&
+      bookRefreshToken > previousRefresh.token
+    refreshTokenRef.current = { bookId, token: bookRefreshToken }
+
     let cancelled = false
     const load = async () => {
       setIsLoading(true)
       setLoadProgress(0)
       try {
         const [data, chapters] = await Promise.all([
-          parseBook(book.path, (percent) => {
-            if (!cancelled) setLoadProgress(percent)
-          }),
-          getBookChapters(bookId),
+          parseBook(
+            book.path,
+            (percent) => {
+              if (!cancelled) setLoadProgress(percent)
+            },
+            { cache: force ? 'no-store' : undefined },
+          ),
+          getBookChapters(bookId, { force }),
         ])
         data.chapters = chapters
         if (!cancelled) setBookData({ bookId, content: data })
@@ -198,7 +212,7 @@ export function BookReader({ bookId, showReading = false }: BookReaderProps) {
     return () => {
       cancelled = true
     }
-  }, [bookId, book?.path, getBookChapters])
+  }, [bookId, book?.path, bookRefreshToken, getBookChapters])
 
   useLayoutEffect(() => {
     lockScroll()
@@ -365,8 +379,14 @@ export function BookReader({ bookId, showReading = false }: BookReaderProps) {
         </h3>
 
         <div className="flex shrink-0 gap-2 whitespace-nowrap">
-          {progress?.percent > 0 && (
+          {isLoading ? (
+            <span className="tabular-nums">
+              {loadProgress > 0 ? `${loadProgress}%` : '刷新中'}
+            </span>
+          ) : progress?.percent > 0 ? (
             <span>{Math.round(progress.percent)}%</span>
+          ) : (
+            null
           )}
         </div>
       </div>

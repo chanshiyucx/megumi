@@ -11,10 +11,13 @@ interface PageManifest {
 
 interface ComicSummaryManifest {
   title: string
-  coverKey?: string
+  coverKey: string
+  coverMtimeMs: number
+  detailVersion: string
 }
 
 interface ComicManifest {
+  schemaVersion: 4
   title: string
   pages: PageManifest[]
 }
@@ -22,6 +25,7 @@ interface ComicManifest {
 interface BookManifest {
   title: string
   key: string
+  mtimeMs: number
 }
 
 interface ChapterManifest {
@@ -30,6 +34,7 @@ interface ChapterManifest {
 }
 
 interface BookDetailManifest {
+  schemaVersion: 4
   title: string
   lineCount: number
   chapters: ChapterManifest[]
@@ -53,7 +58,7 @@ type LibraryManifest =
     }
 
 interface Manifest {
-  schemaVersion: 3
+  schemaVersion: 4
   generatedAt: string
   libraries: LibraryManifest[]
 }
@@ -98,10 +103,10 @@ function assetUrl(
 function versionedAssetUrl(
   manifestUrl: string,
   key: string,
-  mtimeMs: number,
+  version: string | number,
 ) {
   const url = new URL(assetUrl(manifestUrl, key))
-  url.searchParams.set('v', String(mtimeMs))
+  url.searchParams.set('v', String(version))
   return url.toString()
 }
 
@@ -117,7 +122,7 @@ function filenameFromKey(key: string) {
   return key.split('/').pop() ?? key
 }
 
-async function fetchTagsOrEmpty(cache: RequestCache = 'no-cache'): Promise<RemoteTags> {
+async function fetchTagsOrEmpty(cache?: RequestCache): Promise<RemoteTags> {
   try {
     return await fetchRemoteTags({ cache })
   } catch (error) {
@@ -134,7 +139,7 @@ async function fetchTagsOrEmpty(cache: RequestCache = 'no-cache'): Promise<Remot
 
 export async function fetchRemoteCatalog({
   allowEmptyTagsFallback = true,
-  cache = 'no-cache',
+  cache,
 }: FetchRemoteCatalogOptions = {}): Promise<RemoteCatalog> {
   const manifestUrl = process.env.NEXT_PUBLIC_MEGUMI_MANIFEST_URL
   if (!manifestUrl) {
@@ -142,7 +147,7 @@ export async function fetchRemoteCatalog({
   }
 
   const [response, tags] = await Promise.all([
-    fetch(manifestUrl, { cache }),
+    fetch(manifestUrl, cache ? { cache } : undefined),
     allowEmptyTagsFallback ? fetchTagsOrEmpty(cache) : fetchRemoteTags({ cache }),
   ])
   if (!response.ok) {
@@ -171,7 +176,11 @@ export async function fetchRemoteCatalog({
       for (const sourceComic of sourceLibrary.comics) {
         const comicId = `${libraryId}/${sourceComic.title}`
         comicSources[comicId] = {
-          detailUrl: assetUrl(manifestUrl, detailKeyFor(comicId)),
+          detailUrl: versionedAssetUrl(
+            manifestUrl,
+            detailKeyFor(comicId),
+            sourceComic.detailVersion,
+          ),
           manifestUrl,
         }
         const comicTags = tags.comics[sourceComic.title] ?? {}
@@ -179,9 +188,11 @@ export async function fetchRemoteCatalog({
           id: comicId,
           title: sourceComic.title,
           path: comicId,
-          cover: sourceComic.coverKey
-            ? assetUrl(manifestUrl, sourceComic.coverKey)
-            : '',
+          cover: versionedAssetUrl(
+            manifestUrl,
+            sourceComic.coverKey,
+            sourceComic.coverMtimeMs,
+          ),
           libraryId,
           starred: Boolean(comicTags.starred),
           deleted: Boolean(comicTags.deleted),
@@ -204,13 +215,21 @@ export async function fetchRemoteCatalog({
         const bookId = stripExtension(sourceBook.key)
         const bookTags = tags.books[sourceBook.title] ?? {}
         bookSources[bookId] = {
-          detailUrl: assetUrl(manifestUrl, detailKeyFor(bookId)),
+          detailUrl: versionedAssetUrl(
+            manifestUrl,
+            detailKeyFor(bookId),
+            sourceBook.mtimeMs,
+          ),
           title: sourceBook.title,
         }
         books.push({
           id: bookId,
           title: sourceBook.title,
-          path: assetUrl(manifestUrl, sourceBook.key),
+          path: versionedAssetUrl(
+            manifestUrl,
+            sourceBook.key,
+            sourceBook.mtimeMs,
+          ),
           authorId,
           libraryId,
           starred: Boolean(bookTags.starred),
@@ -226,10 +245,10 @@ export async function fetchRemoteCatalog({
 
 export async function fetchRemoteBookChapters(
   source: RemoteBookSource,
-  { cache = 'no-cache', tags }: FetchRemoteDetailOptions = {},
+  { cache, tags }: FetchRemoteDetailOptions = {},
 ): Promise<Book['chapters']> {
   const [response, resolvedTags] = await Promise.all([
-    fetch(source.detailUrl, { cache }),
+    fetch(source.detailUrl, cache ? { cache } : undefined),
     tags ? Promise.resolve(tags) : fetchTagsOrEmpty(cache),
   ])
   if (!response.ok) {
@@ -248,10 +267,10 @@ export async function fetchRemoteBookChapters(
 
 export async function fetchRemoteComicImages(
   source: RemoteComicSource,
-  { cache = 'no-cache', tags }: FetchRemoteDetailOptions = {},
+  { cache, tags }: FetchRemoteDetailOptions = {},
 ): Promise<Image[]> {
   const [response, resolvedTags] = await Promise.all([
-    fetch(source.detailUrl, { cache }),
+    fetch(source.detailUrl, cache ? { cache } : undefined),
     tags ? Promise.resolve(tags) : fetchTagsOrEmpty(cache),
   ])
   if (!response.ok) {

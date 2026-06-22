@@ -8,12 +8,14 @@ import { immer } from 'zustand/middleware/immer'
 import type { LibraryNavStatus } from '@/types/library'
 
 export type ThemeMode = 'light' | 'dark'
+export type ComicLibraryViewMode = 'grid' | 'scroll'
 
 interface UIState {
   isSidebarCollapsed: boolean
   isMiddleCollapsed: boolean
   isImmersive: boolean
   theme: ThemeMode
+  comicLibraryViewMode: ComicLibraryViewMode
   selectedLibraryId: string | null
   navStatus: Record<string, LibraryNavStatus>
   toggleSidebar: () => void
@@ -22,6 +24,7 @@ interface UIState {
   setMiddleCollapsed: (value: boolean) => void
   toggleImmersive: () => void
   setTheme: (theme: ThemeMode) => void
+  setComicLibraryViewMode: (viewMode: ComicLibraryViewMode) => void
   setSelectedLibraryId: (id: string | null) => void
   setNavStatus: (libraryId: string, status: LibraryNavStatus) => void
 }
@@ -31,12 +34,17 @@ interface PersistedUIState {
   isMiddleCollapsed: boolean
   isImmersive: boolean
   theme: ThemeMode
+  comicLibraryViewMode: ComicLibraryViewMode
   selectedLibraryId: string | null
   navStatus: Record<string, LibraryNavStatus>
 }
 
 const sanitizeThemeMode = (theme: unknown): ThemeMode =>
   theme === 'dark' ? 'dark' : 'light'
+
+const sanitizeComicLibraryViewMode = (
+  viewMode: unknown,
+): ComicLibraryViewMode => (viewMode === 'scroll' ? 'scroll' : 'grid')
 
 const applyTheme = (theme: ThemeMode) => {
   if (typeof window === 'undefined') return
@@ -74,6 +82,7 @@ export const useUIStore = create<UIState>()(
         isMiddleCollapsed: false,
         isImmersive: false,
         theme: 'light',
+        comicLibraryViewMode: 'grid',
         selectedLibraryId: null,
         navStatus: {},
         toggleSidebar: () =>
@@ -91,6 +100,10 @@ export const useUIStore = create<UIState>()(
             state.isImmersive = !state.isImmersive
           }),
         setTheme: (theme) => set({ theme: sanitizeThemeMode(theme) }),
+        setComicLibraryViewMode: (viewMode) =>
+          set({
+            comicLibraryViewMode: sanitizeComicLibraryViewMode(viewMode),
+          }),
         setSelectedLibraryId: (id) => set({ selectedLibraryId: id }),
         setNavStatus: (libraryId, status) =>
           set((state) => {
@@ -108,6 +121,7 @@ export const useUIStore = create<UIState>()(
           isMiddleCollapsed: state.isMiddleCollapsed,
           isImmersive: state.isImmersive,
           theme: state.theme,
+          comicLibraryViewMode: state.comicLibraryViewMode,
           selectedLibraryId: state.selectedLibraryId,
           navStatus: state.navStatus,
         }),

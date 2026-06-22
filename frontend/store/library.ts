@@ -8,7 +8,7 @@ import {
   type RemoteBookSource,
   type RemoteComicSource,
 } from '@/lib/manifest'
-import { chapterTagId, patchRemoteTags } from '@/lib/tags'
+import { chapterTagId, patchRemoteTags, type RemoteTags } from '@/lib/tags'
 import { useUIStore } from '@/store/ui'
 import { useTabsStore } from '@/store/tabs'
 import type {
@@ -32,8 +32,13 @@ const comicImageLoads = new Map<string, Promise<Image[]>>()
 const bookChapterLoads = new Map<string, Promise<Chapter[]>>()
 let hydrateLoad: Promise<void> | null = null
 let hydrateSeq = 0
+let latestTags: RemoteTags | null = null
 
 type LoadStatus = 'idle' | 'loading' | 'ready' | 'failed'
+
+interface HydrateOptions {
+  force?: boolean
+}
 
 interface LibraryState {
   libraries: Record<string, Library>
@@ -49,7 +54,7 @@ interface LibraryState {
   bookChapterStatus: Record<string, LoadStatus>
   loadStatus: LoadStatus
   loadError?: string
-  hydrate: () => Promise<void>
+  hydrate: (options?: HydrateOptions) => Promise<void>
   reorderLibrary: (orderedIds: string[]) => void
   getComicImages: (comicId: string) => Promise<Image[]>
   getBookChapters: (bookId: string) => Promise<Book['chapters']>
@@ -145,7 +150,32 @@ function applyRemoteChapterTags(book: Book, catalog: RemoteCatalog) {
   }
 }
 
-function buildMaps(catalog: RemoteCatalog, previous: LibraryState) {
+function updateLatestTags(targetType: string, targetId: string, tags: FileTags) {
+  if (!latestTags) return
+
+  const bucket =
+    targetType === 'comic'
+      ? latestTags.comics
+      : targetType === 'book'
+        ? latestTags.books
+        : targetType === 'image'
+          ? latestTags.images
+          : targetType === 'chapter'
+            ? latestTags.chapters
+            : null
+
+  if (!bucket) return
+  bucket[targetId] = {
+    ...bucket[targetId],
+    ...tags,
+  }
+}
+
+function buildMaps(
+  catalog: RemoteCatalog,
+  previous: LibraryState,
+  invalidateDetails: boolean,
+) {
   const libraries: Record<string, Library> = {}
   for (const library of catalog.libraries) libraries[library.id] = library
 
@@ -192,6 +222,10 @@ function buildMaps(catalog: RemoteCatalog, previous: LibraryState) {
         images: previousImages.images.map((image) => ({ ...image })),
       }
       applyRemoteImageTags(preservedImages.images, catalog)
+      if (invalidateDetails) {
+        preservedImages.status = 'idle'
+        delete preservedImages.error
+      }
       comicImages[comicId] = preservedImages
       continue
     }
@@ -204,7 +238,11 @@ function buildMaps(catalog: RemoteCatalog, previous: LibraryState) {
 
   const bookChapterStatus: Record<string, LoadStatus> = {}
   for (const book of catalog.books) {
-    bookChapterStatus[book.id] = previous.bookChapterStatus[book.id] ?? 'idle'
+    const previousStatus = previous.bookChapterStatus[book.id] ?? 'idle'
+    bookChapterStatus[book.id] =
+      invalidateDetails && previousStatus !== 'idle'
+        ? 'idle'
+        : previousStatus
   }
 
   return {
@@ -256,7 +294,7 @@ export const useLibraryStore = create<LibraryState>()(
     bookChapterStatus: {},
     loadStatus: 'idle',
 
-    hydrate: async () => {
+    hydrate: async ({ force = false }: HydrateOptions = {}) => {
       if (hydrateLoad) return hydrateLoad
       const wasReady = get().loadStatus === 'ready'
       const seq = ++hydrateSeq
@@ -271,9 +309,11 @@ export const useLibraryStore = create<LibraryState>()(
         try {
           const catalog = await fetchRemoteCatalog({
             allowEmptyTagsFallback: !wasReady,
+            cache: force ? 'no-store' : 'no-cache',
           })
           if (seq !== hydrateSeq) return
-          const maps = buildMaps(catalog, get())
+          latestTags = catalog.tags
+          const maps = buildMaps(catalog, get(), wasReady)
           const orderedLibraryIds = applyLibraryOrder(
             maps.libraries,
             readStoredLibraryOrder(),
@@ -327,7 +367,9 @@ export const useLibraryStore = create<LibraryState>()(
 
       const load = (async () => {
         try {
-          const chapters = await fetchRemoteBookChapters(source)
+          const chapters = await fetchRemoteBookChapters(source, {
+            tags: latestTags ?? undefined,
+          })
           set((state) => {
             const book = state.books[bookId]
             if (!book) return
@@ -368,6 +410,7 @@ export const useLibraryStore = create<LibraryState>()(
           targetId: previous.title,
           tags,
         })
+        updateLatestTags('book', previous.title, tags)
       } catch (error) {
         console.error(`Failed to update book tags for ${bookId}:`, error)
         set((state) => {
@@ -395,6 +438,7 @@ export const useLibraryStore = create<LibraryState>()(
           targetId: previous.title,
           tags,
         })
+        updateLatestTags('comic', previous.title, tags)
       } catch (error) {
         console.error(`Failed to update comic tags for ${comicId}:`, error)
         set((state) => {
@@ -422,6 +466,7 @@ export const useLibraryStore = create<LibraryState>()(
 
       try {
         await patchRemoteTags({ targetType: 'image', targetId: imageKey, tags })
+        updateLatestTags('image', imageKey, tags)
       } catch (error) {
         console.error(`Failed to update image tags for ${imageKey}:`, error)
         set((state) => {
@@ -450,11 +495,13 @@ export const useLibraryStore = create<LibraryState>()(
       })
 
       try {
+        const targetId = chapterTagId(book.title, previous.title)
         await patchRemoteTags({
           targetType: 'chapter',
-          targetId: chapterTagId(book.title, previous.title),
+          targetId,
           tags,
         })
+        updateLatestTags('chapter', targetId, tags)
       } catch (error) {
         console.error(
           `Failed to update chapter tags for ${bookId}:${lineIndex}:`,
@@ -488,7 +535,9 @@ export const useLibraryStore = create<LibraryState>()(
 
       const load = (async () => {
         try {
-          const images = await fetchRemoteComicImages(source)
+          const images = await fetchRemoteComicImages(source, {
+            tags: latestTags ?? undefined,
+          })
           set((state) => {
             const current = state.comicImages[comicId]
             if (!current) return

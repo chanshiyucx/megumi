@@ -1,5 +1,5 @@
 import { Grid2x2, Rows2, Star, StepForward, Trash2 } from 'lucide-react'
-import { useEffect, useEffectEvent, useRef, useState } from 'react'
+import { useEffect, useEffectEvent, useRef } from 'react'
 import { VirtuosoGrid } from 'react-virtuoso'
 import { useShallow } from 'zustand/react/shallow'
 import { Button } from '@/components/ui/button'
@@ -21,8 +21,6 @@ import {
   type Image,
   type Library,
 } from '@/types/library'
-
-type ViewMode = 'grid' | 'scroll'
 
 interface ComicItemProps {
   comic: Comic
@@ -68,12 +66,13 @@ interface ComicLibraryProps {
 export function ComicLibrary({ selectedLibrary }: ComicLibraryProps) {
   const stripRef = useRef<ComicStripHandle>(null)
   const { readerVisible, middleClass, readerClass, openReader } = usePanelNav()
-  const [viewMode, setViewMode] = useState<ViewMode>('grid')
 
   const activeTab = useTabsStore((s) => s.activeTab)
   const addTab = useTabsStore((s) => s.addTab)
   const setActiveTab = useTabsStore((s) => s.setActiveTab)
 
+  const viewMode = useUIStore((s) => s.comicLibraryViewMode)
+  const setViewMode = useUIStore((s) => s.setComicLibraryViewMode)
   const setNavStatus = useUIStore((s) => s.setNavStatus)
   const updateComicTags = useLibraryStore((s) => s.updateComicTags)
 
@@ -113,7 +112,7 @@ export function ComicLibrary({ selectedLibrary }: ComicLibraryProps) {
   })
 
   const toggleViewMode = () => {
-    setViewMode((prev) => (prev === 'grid' ? 'scroll' : 'grid'))
+    setViewMode(viewMode === 'grid' ? 'scroll' : 'grid')
   }
 
   const handleContinueReading = () => {

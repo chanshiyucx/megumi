@@ -70,6 +70,12 @@ export interface RemoteCatalog {
 
 export interface FetchRemoteCatalogOptions {
   allowEmptyTagsFallback?: boolean
+  cache?: RequestCache
+}
+
+interface FetchRemoteDetailOptions {
+  cache?: RequestCache
+  tags?: RemoteTags
 }
 
 export interface RemoteComicSource {
@@ -111,9 +117,9 @@ function filenameFromKey(key: string) {
   return key.split('/').pop() ?? key
 }
 
-async function fetchTagsOrEmpty(): Promise<RemoteTags> {
+async function fetchTagsOrEmpty(cache: RequestCache = 'no-cache'): Promise<RemoteTags> {
   try {
-    return await fetchRemoteTags()
+    return await fetchRemoteTags({ cache })
   } catch (error) {
     console.error('Failed to fetch tags:', error)
     return {
@@ -128,6 +134,7 @@ async function fetchTagsOrEmpty(): Promise<RemoteTags> {
 
 export async function fetchRemoteCatalog({
   allowEmptyTagsFallback = true,
+  cache = 'no-cache',
 }: FetchRemoteCatalogOptions = {}): Promise<RemoteCatalog> {
   const manifestUrl = process.env.NEXT_PUBLIC_MEGUMI_MANIFEST_URL
   if (!manifestUrl) {
@@ -135,8 +142,8 @@ export async function fetchRemoteCatalog({
   }
 
   const [response, tags] = await Promise.all([
-    fetch(manifestUrl, { cache: 'no-store' }),
-    allowEmptyTagsFallback ? fetchTagsOrEmpty() : fetchRemoteTags(),
+    fetch(manifestUrl, { cache }),
+    allowEmptyTagsFallback ? fetchTagsOrEmpty(cache) : fetchRemoteTags({ cache }),
   ])
   if (!response.ok) {
     throw new Error(`HTTP ${response.status} for ${manifestUrl}`)
@@ -219,10 +226,11 @@ export async function fetchRemoteCatalog({
 
 export async function fetchRemoteBookChapters(
   source: RemoteBookSource,
+  { cache = 'no-cache', tags }: FetchRemoteDetailOptions = {},
 ): Promise<Book['chapters']> {
-  const [response, tags] = await Promise.all([
-    fetch(source.detailUrl, { cache: 'no-store' }),
-    fetchTagsOrEmpty(),
+  const [response, resolvedTags] = await Promise.all([
+    fetch(source.detailUrl, { cache }),
+    tags ? Promise.resolve(tags) : fetchTagsOrEmpty(cache),
   ])
   if (!response.ok) {
     throw new Error(`HTTP ${response.status} for ${source.detailUrl}`)
@@ -232,17 +240,19 @@ export async function fetchRemoteBookChapters(
   return book.chapters.map((chapter) => ({
     ...chapter,
     starred: Boolean(
-      tags.chapters[chapterTagId(source.title, chapter.title)]?.starred,
+      resolvedTags.chapters[chapterTagId(source.title, chapter.title)]
+        ?.starred,
     ),
   }))
 }
 
 export async function fetchRemoteComicImages(
   source: RemoteComicSource,
+  { cache = 'no-cache', tags }: FetchRemoteDetailOptions = {},
 ): Promise<Image[]> {
-  const [response, tags] = await Promise.all([
-    fetch(source.detailUrl, { cache: 'no-store' }),
-    fetchTagsOrEmpty(),
+  const [response, resolvedTags] = await Promise.all([
+    fetch(source.detailUrl, { cache }),
+    tags ? Promise.resolve(tags) : fetchTagsOrEmpty(cache),
   ])
   if (!response.ok) {
     throw new Error(`HTTP ${response.status} for ${source.detailUrl}`)
@@ -262,8 +272,8 @@ export async function fetchRemoteComicImages(
       page.mtimeMs,
     ),
     filename: filenameFromKey(page.key),
-    starred: Boolean(tags.images[page.key]?.starred),
-    deleted: Boolean(tags.images[page.key]?.deleted),
+    starred: Boolean(resolvedTags.images[page.key]?.starred),
+    deleted: Boolean(resolvedTags.images[page.key]?.deleted),
     width: page.width,
     height: page.height,
     index,

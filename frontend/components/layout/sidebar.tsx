@@ -170,7 +170,7 @@ export function Sidebar() {
       </ScrollArea>
 
       <div className="flex w-full shrink-0 items-center gap-2 p-4">
-        <ThemeSwitcher onRefresh={() => void hydrate()} />
+        <ThemeSwitcher onRefresh={() => void hydrate({ force: true })} />
       </div>
     </aside>
   );

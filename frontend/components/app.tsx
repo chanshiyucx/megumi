@@ -8,18 +8,32 @@ import { Spinner } from '@/components/ui/spinner'
 import { useLibraryStore } from '@/store/library'
 import { initializeThemeSync } from '@/store/ui'
 
+const AUTO_REFRESH_MIN_INTERVAL_MS = 60_000
+
 export function App() {
   const loadStatus = useLibraryStore((state) => state.loadStatus)
   const loadError = useLibraryStore((state) => state.loadError)
   const hydrate = useLibraryStore((state) => state.hydrate)
-  const refreshHydrate = useEffectEvent(() => hydrate())
+  const refreshHydrate = useEffectEvent((force = false) =>
+    hydrate({ force }),
+  )
 
   useEffect(() => {
     const cleanupThemeSync = initializeThemeSync()
     let inflight: Promise<void> | null = null
-    const refresh = () => {
+    let lastAutoRefreshAt = 0
+    const refresh = (force = false) => {
+      const now = Date.now()
+      if (
+        !force &&
+        lastAutoRefreshAt &&
+        now - lastAutoRefreshAt < AUTO_REFRESH_MIN_INTERVAL_MS
+      ) {
+        return inflight ?? Promise.resolve()
+      }
       if (inflight) return inflight
-      inflight = refreshHydrate().finally(() => {
+      if (!force) lastAutoRefreshAt = now
+      inflight = refreshHydrate(force).finally(() => {
         inflight = null
       })
       return inflight
@@ -52,7 +66,10 @@ export function App() {
     return (
       <div className="bg-surface text-subtle flex h-dvh w-screen flex-col items-center justify-center gap-3 p-6 text-center">
         <p className="max-w-lg text-sm">{loadError}</p>
-        <Button className="gap-2 px-3" onClick={() => void hydrate()}>
+        <Button
+          className="gap-2 px-3"
+          onClick={() => void hydrate({ force: true })}
+        >
           <RefreshCw className="h-4 w-4" />
           重试
         </Button>

@@ -75,11 +75,9 @@ export interface RemoteCatalog {
 
 export interface FetchRemoteCatalogOptions {
   allowEmptyTagsFallback?: boolean
-  cache?: RequestCache
 }
 
 interface FetchRemoteDetailOptions {
-  cache?: RequestCache
   tags?: RemoteTags
 }
 
@@ -122,9 +120,9 @@ function filenameFromKey(key: string) {
   return key.split('/').pop() ?? key
 }
 
-async function fetchTagsOrEmpty(cache?: RequestCache): Promise<RemoteTags> {
+async function fetchTagsOrEmpty(): Promise<RemoteTags> {
   try {
-    return await fetchRemoteTags({ cache })
+    return await fetchRemoteTags()
   } catch (error) {
     console.error('Failed to fetch tags:', error)
     return {
@@ -139,7 +137,6 @@ async function fetchTagsOrEmpty(cache?: RequestCache): Promise<RemoteTags> {
 
 export async function fetchRemoteCatalog({
   allowEmptyTagsFallback = true,
-  cache,
 }: FetchRemoteCatalogOptions = {}): Promise<RemoteCatalog> {
   const manifestUrl = process.env.NEXT_PUBLIC_MEGUMI_MANIFEST_URL
   if (!manifestUrl) {
@@ -147,8 +144,8 @@ export async function fetchRemoteCatalog({
   }
 
   const [response, tags] = await Promise.all([
-    fetch(manifestUrl, cache ? { cache } : undefined),
-    allowEmptyTagsFallback ? fetchTagsOrEmpty(cache) : fetchRemoteTags({ cache }),
+    fetch(manifestUrl, { cache: 'no-cache' }),
+    allowEmptyTagsFallback ? fetchTagsOrEmpty() : fetchRemoteTags(),
   ])
   if (!response.ok) {
     throw new Error(`HTTP ${response.status} for ${manifestUrl}`)
@@ -245,11 +242,11 @@ export async function fetchRemoteCatalog({
 
 export async function fetchRemoteBookChapters(
   source: RemoteBookSource,
-  { cache, tags }: FetchRemoteDetailOptions = {},
+  { tags }: FetchRemoteDetailOptions = {},
 ): Promise<Book['chapters']> {
   const [response, resolvedTags] = await Promise.all([
-    fetch(source.detailUrl, cache ? { cache } : undefined),
-    tags ? Promise.resolve(tags) : fetchTagsOrEmpty(cache),
+    fetch(source.detailUrl),
+    tags ? Promise.resolve(tags) : fetchTagsOrEmpty(),
   ])
   if (!response.ok) {
     throw new Error(`HTTP ${response.status} for ${source.detailUrl}`)
@@ -267,11 +264,11 @@ export async function fetchRemoteBookChapters(
 
 export async function fetchRemoteComicImages(
   source: RemoteComicSource,
-  { cache, tags }: FetchRemoteDetailOptions = {},
+  { tags }: FetchRemoteDetailOptions = {},
 ): Promise<Image[]> {
   const [response, resolvedTags] = await Promise.all([
-    fetch(source.detailUrl, cache ? { cache } : undefined),
-    tags ? Promise.resolve(tags) : fetchTagsOrEmpty(cache),
+    fetch(source.detailUrl),
+    tags ? Promise.resolve(tags) : fetchTagsOrEmpty(),
   ])
   if (!response.ok) {
     throw new Error(`HTTP ${response.status} for ${source.detailUrl}`)

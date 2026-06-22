@@ -26,6 +26,10 @@ interface PatchTagsRequest {
 }
 
 const TAGS_KEY = '.megumi/tags.json'
+const EMPTY_TAGS_ETAG = '"empty"'
+const REVALIDATE_HEADERS = {
+  'Cache-Control': 'private, no-cache',
+}
 
 const EMPTY_TAGS: RemoteTags = {
   version: 1,
@@ -123,10 +127,8 @@ function normalizeFileTags(tags: FileTags): FileTags {
   return normalized
 }
 
-async function readTags(env: Env): Promise<RemoteTags> {
-  const object = await env.MEGUMI_BUCKET.get(TAGS_KEY)
+async function parseTagsObject(object: R2ObjectBody | null): Promise<RemoteTags> {
   if (!object) return emptyTags()
-
   try {
     return normalizeTags(JSON.parse(await object.text()))
   } catch {
@@ -134,10 +136,27 @@ async function readTags(env: Env): Promise<RemoteTags> {
   }
 }
 
-async function writeTags(env: Env, tags: RemoteTags) {
-  await env.MEGUMI_BUCKET.put(TAGS_KEY, JSON.stringify(tags), {
+async function readTags(env: Env): Promise<RemoteTags> {
+  return parseTagsObject(await env.MEGUMI_BUCKET.get(TAGS_KEY))
+}
+
+async function writeTags(env: Env, tags: RemoteTags): Promise<string> {
+  const object = await env.MEGUMI_BUCKET.put(TAGS_KEY, JSON.stringify(tags), {
     httpMetadata: { contentType: 'application/json; charset=utf-8' },
   })
+  return object.httpEtag
+}
+
+function etagMatches(ifNoneMatch: string | null, etag: string) {
+  if (!ifNoneMatch) return false
+  const normalize = (value: string) => value.trim().replace(/^W\//, '')
+  const expected = normalize(etag)
+  return ifNoneMatch
+    .split(',')
+    .some(
+      (candidate) =>
+        candidate.trim() === '*' || normalize(candidate) === expected,
+    )
 }
 
 function parsePatchRequest(value: unknown): PatchTagsRequest | null {
@@ -193,7 +212,21 @@ function applyPatch(tags: RemoteTags, patch: PatchTagsRequest) {
 
 async function handleTags(request: Request, env: Env) {
   if (request.method === 'GET') {
-    return jsonResponse(request, env, await readTags(env))
+    const object = await env.MEGUMI_BUCKET.get(TAGS_KEY)
+    const etag = object?.httpEtag ?? EMPTY_TAGS_ETAG
+    const headers = { ...REVALIDATE_HEADERS, ETag: etag }
+    if (etagMatches(request.headers.get('If-None-Match'), etag)) {
+      const responseHeaders = corsHeaders(request, env)
+      for (const [key, value] of new Headers(headers)) {
+        responseHeaders.set(key, value)
+      }
+      return new Response(null, {
+        status: 304,
+        headers: responseHeaders,
+      })
+    }
+    const tags = await parseTagsObject(object)
+    return jsonResponse(request, env, tags, { headers })
   }
 
   if (request.method !== 'PATCH') {
@@ -218,8 +251,10 @@ async function handleTags(request: Request, env: Env) {
 
   const tags = await readTags(env)
   applyPatch(tags, patch)
-  await writeTags(env, tags)
-  return jsonResponse(request, env, tags)
+  const etag = await writeTags(env, tags)
+  return jsonResponse(request, env, tags, {
+    headers: { 'Cache-Control': 'no-store', ETag: etag },
+  })
 }
 
 export default {

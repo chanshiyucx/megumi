@@ -14,10 +14,9 @@ function parseBookText(text: string): BookContent {
 export async function parseBook(
   url: string,
   onProgress?: (percent: number) => void,
-  { cache }: { cache?: RequestCache } = {},
 ): Promise<BookContent> {
   try {
-    const res = await fetch(url, cache ? { cache } : undefined)
+    const res = await fetch(url)
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
 
     const total = Number(res.headers.get('content-length')) || 0

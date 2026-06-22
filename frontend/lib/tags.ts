@@ -17,10 +17,6 @@ interface PatchTagsRequest {
   tags: FileTags
 }
 
-interface FetchRemoteTagsOptions {
-  cache?: RequestCache
-}
-
 const EMPTY_TAGS: RemoteTags = {
   version: 1,
   comics: {},
@@ -50,13 +46,11 @@ export function chapterTagId(bookTitle: string, chapterTitle: string) {
   return `${bookTitle}:${chapterTitle}`
 }
 
-export async function fetchRemoteTags({
-  cache,
-}: FetchRemoteTagsOptions = {}): Promise<RemoteTags> {
+export async function fetchRemoteTags(): Promise<RemoteTags> {
   const baseUrl = tagsApiUrl()
   if (!baseUrl) return EMPTY_TAGS
 
-  const response = await fetch(`${baseUrl}/tags`, cache ? { cache } : undefined)
+  const response = await fetch(`${baseUrl}/tags`, { cache: 'no-cache' })
   if (response.status === 404) return EMPTY_TAGS
   if (!response.ok) {
     throw new Error(`HTTP ${response.status} for ${baseUrl}/tags`)

@@ -196,7 +196,6 @@ export function BookReader({ bookId, showReading = false }: BookReaderProps) {
             (percent) => {
               if (!cancelled) setLoadProgress(percent)
             },
-            { cache: force ? 'no-store' : undefined },
           ),
           getBookChapters(bookId, { force }),
         ])

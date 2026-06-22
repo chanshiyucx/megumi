@@ -7,6 +7,10 @@ It exposes:
 - `GET /tags`
 - `PATCH /tags`
 
+`GET /tags` is stored by browsers but revalidated on every request. The Worker
+returns an R2-backed `ETag` and responds with `304 Not Modified` when the tags
+have not changed, avoiding repeated JSON transfers without serving stale state.
+
 State is stored at `.megumi/tags.json` in the `MEGUMI_BUCKET` R2 binding. The
 file stores only `true` values; missing values mean `false`.
 
@@ -30,12 +34,12 @@ Deploy:
 
 ```sh
 pnpm install
-pnpm deploy
+pnpm run deploy
 ```
 
 Run or deploy the isolated dev Worker:
 
 ```sh
 pnpm dev:dev
-pnpm deploy:dev
+pnpm run deploy:dev
 ```

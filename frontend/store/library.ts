@@ -37,10 +37,6 @@ let latestTags: RemoteTags | null = null
 
 type LoadStatus = 'idle' | 'loading' | 'ready' | 'failed'
 
-interface HydrateOptions {
-  force?: boolean
-}
-
 interface ResourceLoadOptions {
   force?: boolean
 }
@@ -65,7 +61,7 @@ interface LibraryState {
   bookRefreshTokens: Record<string, number>
   loadStatus: LoadStatus
   loadError?: string
-  hydrate: (options?: HydrateOptions) => Promise<void>
+  hydrate: () => Promise<void>
   refreshCurrentResource: () => Promise<void>
   reorderLibrary: (orderedIds: string[]) => void
   getComicImages: (
@@ -336,7 +332,7 @@ export const useLibraryStore = create<LibraryState>()(
     bookRefreshTokens: {},
     loadStatus: 'idle',
 
-    hydrate: async ({ force = false }: HydrateOptions = {}) => {
+    hydrate: async () => {
       if (hydrateLoad) return hydrateLoad
       const wasReady = get().loadStatus === 'ready'
       const seq = ++hydrateSeq
@@ -351,7 +347,6 @@ export const useLibraryStore = create<LibraryState>()(
         try {
           const catalog = await fetchRemoteCatalog({
             allowEmptyTagsFallback: !wasReady,
-            cache: force ? 'no-store' : undefined,
           })
           if (seq !== hydrateSeq) return
           latestTags = catalog.tags
@@ -389,7 +384,7 @@ export const useLibraryStore = create<LibraryState>()(
 
     refreshCurrentResource: async () => {
       const target = resolveCurrentResource(get())
-      await get().hydrate({ force: true })
+      await get().hydrate()
       if (!target) return
 
       const state = get()
@@ -429,7 +424,6 @@ export const useLibraryStore = create<LibraryState>()(
       const load = (async () => {
         try {
           const chapters = await fetchRemoteBookChapters(source, {
-            cache: force ? 'no-store' : undefined,
             tags: latestTags ?? undefined,
           })
           set((state) => {
@@ -598,7 +592,6 @@ export const useLibraryStore = create<LibraryState>()(
       const load = (async () => {
         try {
           const images = await fetchRemoteComicImages(source, {
-            cache: force ? 'no-store' : undefined,
             tags: latestTags ?? undefined,
           })
           set((state) => {

@@ -10,6 +10,7 @@ COMMON_FLAGS=(
   --progress
   --exclude ".megumi/tags.json"
   --exclude ".megumi/state.json"
+  --exclude ".megumi/state.sqlite3*"
   --exclude ".DS_Store"
   --log-file="$LOG"
   --log-level INFO

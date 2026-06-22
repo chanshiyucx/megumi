@@ -1,7 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Cursor};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -13,9 +15,11 @@ use memmap2::Mmap;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use turbojpeg::{Decompressor, Image as JpegImage, PixelFormat, ScalingFactor};
+mod fsevents;
+mod state;
+
 const MANIFEST_FILE: &str = "manifest.json";
 const COMIC_MANIFEST_DIR: &str = "manifests";
-const STATE_FILE: &str = ".megumi/state.json";
 const TAGS_FILE: &str = ".megumi/tags.json";
 const THUMBNAIL_DIR: &str = "thumbnail";
 const SCHEMA_VERSION: u32 = 4;
@@ -24,6 +28,7 @@ const THUMBNAIL_QUALITY: u8 = 72;
 const IMAGE_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png"];
 const BOOK_EXTENSIONS: &[&str] = &["txt"];
 const PROGRESS_REPORT_INTERVAL: usize = 500;
+const FULL_SCAN_INTERVAL_MS: u64 = 30 * 24 * 60 * 60 * 1000;
 #[cfg(target_os = "macos")]
 const TAG_KEY: &str = "com.apple.metadata:_kMDItemUserTags";
 #[cfg(target_os = "macos")]
@@ -37,6 +42,8 @@ const DELETE_TAG_NAME: &str = "DELETE";
 #[cfg(target_os = "macos")]
 const DELETE_TAG_VALUE: &str = "DELETE\n6";
 static THUMB_TMP_SEQ: AtomicU64 = AtomicU64::new(0);
+static INTERRUPT_COUNT: AtomicUsize = AtomicUsize::new(0);
+static INTERRUPT_HANDLER: OnceLock<()> = OnceLock::new();
 
 #[derive(Parser)]
 #[command(name = "megumi-backend")]
@@ -59,7 +66,7 @@ struct BuildArgs {
     source: PathBuf,
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[serde(deny_unknown_fields)]
 struct Manifest {
@@ -68,7 +75,7 @@ struct Manifest {
     libraries: Vec<LibraryManifest>,
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 #[serde(deny_unknown_fields)]
 enum LibraryManifest {
@@ -82,7 +89,7 @@ enum LibraryManifest {
     },
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[serde(deny_unknown_fields)]
 struct ComicSummaryManifest {
@@ -92,7 +99,7 @@ struct ComicSummaryManifest {
     detail_version: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ComicManifest {
     schema_version: u32,
@@ -100,7 +107,7 @@ struct ComicManifest {
     pages: Vec<PageManifest>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PageManifest {
     key: String,
@@ -110,7 +117,7 @@ struct PageManifest {
     mtime_ms: u64,
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[serde(deny_unknown_fields)]
 struct AuthorManifest {
@@ -118,7 +125,7 @@ struct AuthorManifest {
     books: Vec<BookManifest>,
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[serde(deny_unknown_fields)]
 struct BookManifest {
@@ -127,7 +134,7 @@ struct BookManifest {
     mtime_ms: u64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct BookDetailManifest {
     schema_version: u32,
@@ -136,7 +143,7 @@ struct BookDetailManifest {
     chapters: Vec<ChapterManifest>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ChapterManifest {
     title: String,
@@ -160,7 +167,7 @@ struct RemoteTags {
     images: BTreeMap<String, FileTags>,
 }
 
-#[derive(Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[serde(deny_unknown_fields)]
 struct BuildState {
@@ -188,7 +195,7 @@ struct ComicState {
     fingerprint: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct PendingOutput {
     output_path: PathBuf,
     data: Vec<u8>,
@@ -210,17 +217,6 @@ struct ComicScan {
 struct AuthorScan {
     name: String,
     book_paths: Vec<PathBuf>,
-}
-
-enum LibraryScan {
-    Comic {
-        title: String,
-        comics: Vec<ComicScan>,
-    },
-    Book {
-        title: String,
-        authors: Vec<AuthorScan>,
-    },
 }
 
 struct ThumbnailWorker {
@@ -310,13 +306,8 @@ struct BuildContext {
     pending_detail_manifests: Vec<PendingOutput>,
     progress: BuildProgress,
     remote_tags: Option<RemoteTags>,
-    full_rebuild: bool,
-    matched_previous_files: AtomicUsize,
-}
-
-struct LoadedBuildState {
-    state: BuildState,
-    missing: bool,
+    recovery_image_mtimes: BTreeMap<String, u64>,
+    units_with_pending_outputs: BTreeSet<String>,
 }
 
 fn main() -> Result<()> {
@@ -327,6 +318,8 @@ fn main() -> Result<()> {
 }
 
 fn build(args: BuildArgs) -> Result<()> {
+    install_interrupt_handler()?;
+    INTERRUPT_COUNT.store(0, Ordering::SeqCst);
     let source = args
         .source
         .canonicalize()
@@ -336,41 +329,159 @@ fn build(args: BuildArgs) -> Result<()> {
     }
 
     let output = source.clone();
-    let loaded_state = load_build_state(&output)?;
-    let previous_state = loaded_state.state;
+    let mut database = state::StateDb::open(&output)?;
+    let now_ms = state::now_ms()?;
+    let volume_device = source.metadata()?.dev();
+    let volume_changed = database
+        .volume_device()?
+        .is_some_and(|previous| previous != volume_device);
+    let previous_cursor = database.event_cursor()?;
+    let periodic_scan_due = database
+        .last_full_scan_ms()?
+        .is_none_or(|last| now_ms.saturating_sub(last) >= FULL_SCAN_INTERVAL_MS);
+    let mut full_scan =
+        database.was_rebuilt() || previous_cursor.is_none() || periodic_scan_due || volume_changed;
+    let mut cursor = fsevents::current_cursor();
+
+    if let Some(previous_cursor) = previous_cursor
+        && !full_scan
+    {
+        match fsevents::changes_since(&source, previous_cursor) {
+            Ok(changes) if !changes.requires_full_scan => {
+                cursor = changes.cursor.max(cursor);
+                database
+                    .enqueue_changes(&changes.unit_keys.into_iter().collect::<Vec<_>>(), cursor)?;
+            }
+            Ok(_) => {
+                eprintln!("warning: FSEvents history is incomplete; performing a full scan");
+                full_scan = true;
+                database.set_event_cursor(cursor)?;
+            }
+            Err(error) => {
+                eprintln!(
+                    "warning: cannot read FSEvents history ({error:#}); performing a full scan"
+                );
+                full_scan = true;
+                database.set_event_cursor(cursor)?;
+            }
+        }
+    } else {
+        database.set_event_cursor(cursor)?;
+    }
+
+    let cached_units = database
+        .load_units()?
+        .into_iter()
+        .map(|unit| (unit.key.clone(), unit))
+        .collect::<BTreeMap<_, _>>();
+    let dirty_units = database.dirty_units()?.into_iter().collect::<BTreeSet<_>>();
+    let discovery = discover_units(&source, &cached_units, &dirty_units, full_scan)?;
+    for removed in &discovery.removed_units {
+        database.remove_unit(removed)?;
+    }
+    let work_keys = discovery
+        .work
+        .iter()
+        .map(UnitWork::key)
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    database.enqueue_changes(&work_keys, cursor)?;
+    if full_scan {
+        database.record_full_scan(now_ms)?;
+        eprintln!("full scan scheduled {} content units", work_keys.len());
+    } else {
+        eprintln!(
+            "incremental scan scheduled {} content units",
+            work_keys.len()
+        );
+    }
+
+    let previous_state = database.load_build_state()?;
     let remote_tags = load_remote_tags(&source)?;
     let applied_tags = remote_tags
         .clone()
         .or_else(|| previous_state.applied_tags.clone());
+    let recovery_image_mtimes = if previous_state.files.is_empty() {
+        load_published_image_mtimes(&output)?
+    } else {
+        BTreeMap::new()
+    };
+    let mut next_state = previous_state.clone();
+    next_state.applied_tags = applied_tags;
     let mut ctx = BuildContext {
         source: source.clone(),
         output: output.clone(),
         previous_state,
-        next_state: BuildState {
-            applied_tags,
-            ..BuildState::default()
-        },
+        next_state,
         pending_detail_manifests: Vec::new(),
         progress: BuildProgress::new(PROGRESS_REPORT_INTERVAL),
         remote_tags,
-        full_rebuild: loaded_state.missing,
-        matched_previous_files: AtomicUsize::new(0),
+        recovery_image_mtimes,
+        units_with_pending_outputs: database.units_with_pending_outputs()?,
     };
+    sync_cached_tag_changes(&ctx, &cached_units)?;
 
-    let (library_scans, image_paths) = collect_library_scans(&ctx)?;
     let thumbnail_pool = rayon::ThreadPoolBuilder::new()
         .num_threads(recommended_thumbnail_workers())
         .build()
         .context("create thumbnail worker pool")?;
-    let processed_images = thumbnail_pool.install(|| {
-        image_paths
-            .par_iter()
-            .map_init(ThumbnailWorker::new, |worker, image_path| {
-                process_image(&ctx, image_path, worker)
-            })
-            .collect::<Result<Vec<_>>>()
-    })?;
-    let libraries = build_libraries(&mut ctx, library_scans, processed_images)?;
+    let mut errors = Vec::new();
+    for work in discovery.work {
+        if INTERRUPT_COUNT.load(Ordering::SeqCst) > 0 {
+            eprintln!("interrupt requested; stopping before the next content unit");
+            errors.push("build interrupted".to_string());
+            break;
+        }
+        let result = match work {
+            UnitWork::Comic {
+                library_key,
+                library_title,
+                scan,
+                image_paths,
+            } => build_comic_unit(
+                &mut ctx,
+                &mut database,
+                &thumbnail_pool,
+                &library_key,
+                &library_title,
+                scan,
+                image_paths,
+            ),
+            UnitWork::Author {
+                key,
+                library_key,
+                library_title,
+                scan,
+            } => build_author_unit(
+                &mut ctx,
+                &mut database,
+                &key,
+                &library_key,
+                &library_title,
+                scan,
+            ),
+        };
+        if let Err(error) = result {
+            eprintln!("error: {error:#}");
+            errors.push(format!("{error:#}"));
+        }
+    }
+
+    if !errors.is_empty() || !database.dirty_units()?.is_empty() {
+        let details = if errors.is_empty() {
+            String::new()
+        } else {
+            format!(": {}", errors.join("; "))
+        };
+        bail!(
+            "build did not publish because {} content unit(s) remain unfinished{}",
+            database.dirty_units()?.len(),
+            details
+        );
+    }
+
+    let libraries = assemble_libraries(database.load_units()?)?;
+    ctx.next_state = database.load_build_state()?;
     warn_missing_tag_targets(&ctx);
     let manifest = Manifest {
         schema_version: SCHEMA_VERSION,
@@ -378,16 +489,15 @@ fn build(args: BuildArgs) -> Result<()> {
         libraries,
     };
 
-    commit_pending_outputs(&mut ctx.pending_detail_manifests)?;
+    let mut pending_outputs = database.pending_outputs()?;
+    commit_pending_outputs(&mut pending_outputs)?;
     write_manifest_if_changed(&ctx.output.join(MANIFEST_FILE), &manifest)?;
-    if ctx.full_rebuild {
-        cleanup_orphaned_outputs(&ctx)?;
-    } else if ctx.matched_previous_files.load(Ordering::Relaxed) != ctx.previous_state.files.len() {
-        cleanup_removed_outputs(&ctx)?;
-    }
-    if ctx.full_rebuild || ctx.previous_state != ctx.next_state {
-        write_json(&ctx.output.join(STATE_FILE), &ctx.next_state)?;
-    }
+    cleanup_orphaned_outputs(&ctx)?;
+    database.clear_pending_outputs()?;
+    database.set_applied_tags(ctx.remote_tags.as_ref())?;
+    database.mark_initialized()?;
+    database.set_volume_device(volume_device)?;
+    database.set_event_cursor(fsevents::current_cursor())?;
 
     let progress = ctx.progress.snapshot();
     let synced_tag_targets = ctx.progress.synced_tag_targets.load(Ordering::Relaxed);
@@ -406,6 +516,370 @@ fn build(args: BuildArgs) -> Result<()> {
         progress.reused_thumbnails
     );
     Ok(())
+}
+
+fn install_interrupt_handler() -> Result<()> {
+    if INTERRUPT_HANDLER.get().is_some() {
+        return Ok(());
+    }
+    ctrlc::set_handler(|| {
+        let count = INTERRUPT_COUNT.fetch_add(1, Ordering::SeqCst) + 1;
+        if count == 1 {
+            eprintln!("interrupt requested; finishing the current content unit");
+        } else {
+            eprintln!("second interrupt received; terminating immediately");
+            std::process::exit(130);
+        }
+    })
+    .context("install interrupt handler")?;
+    let _ = INTERRUPT_HANDLER.set(());
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn sync_cached_tag_changes(
+    ctx: &BuildContext,
+    cached_units: &BTreeMap<String, state::CachedUnit>,
+) -> Result<()> {
+    if ctx.remote_tags.as_ref() == ctx.previous_state.applied_tags.as_ref() {
+        return Ok(());
+    }
+    for unit in cached_units.values() {
+        if unit.kind == state::UnitKind::Comic {
+            sync_comic_tags(ctx, &ctx.source.join(&unit.key), &unit.title, false)?;
+        }
+    }
+    for path in ctx.previous_state.files.keys() {
+        let source_path = ctx.source.join(path);
+        if has_extension(Path::new(path), IMAGE_EXTENSIONS) {
+            sync_image_tags(ctx, &source_path, path, false)?;
+        } else if has_extension(Path::new(path), BOOK_EXTENSIONS) {
+            sync_book_tags(ctx, &source_path, &book_title(&source_path), false)?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn sync_cached_tag_changes(
+    _ctx: &BuildContext,
+    _cached_units: &BTreeMap<String, state::CachedUnit>,
+) -> Result<()> {
+    Ok(())
+}
+
+struct UnitDiscovery {
+    work: Vec<UnitWork>,
+    removed_units: Vec<String>,
+}
+
+enum UnitWork {
+    Comic {
+        library_key: String,
+        library_title: String,
+        scan: ComicScan,
+        image_paths: Vec<PathBuf>,
+    },
+    Author {
+        key: String,
+        library_key: String,
+        library_title: String,
+        scan: AuthorScan,
+    },
+}
+
+impl UnitWork {
+    fn key(&self) -> &str {
+        match self {
+            Self::Comic { scan, .. } => &scan.rel,
+            Self::Author { key, .. } => key,
+        }
+    }
+}
+
+fn discover_units(
+    source: &Path,
+    cached: &BTreeMap<String, state::CachedUnit>,
+    dirty: &BTreeSet<String>,
+    full_scan: bool,
+) -> Result<UnitDiscovery> {
+    let root = inspect_directory(source)?;
+    if !root.images.is_empty() || !root.books.is_empty() {
+        bail!(
+            "resource root contains content files directly: {}",
+            source.display()
+        );
+    }
+
+    let mut seen = BTreeSet::new();
+    let mut work = Vec::new();
+    for library_dir in root.directories {
+        let library_key = relative_key(source, &library_dir)?;
+        let library_title = display_name(&library_dir);
+        let library = inspect_directory(&library_dir)?;
+        if !library.images.is_empty() || !library.books.is_empty() {
+            bail!(
+                "library contains content files directly; expected content directories: {}",
+                library_dir.display()
+            );
+        }
+        let mut library_kind = None;
+        for unit_dir in library.directories {
+            let key = relative_key(source, &unit_dir)?;
+            seen.insert(key.clone());
+            let cached_kind = cached.get(&key).map(|unit| unit.kind);
+            let should_scan = full_scan || dirty.contains(&key) || cached_kind.is_none();
+            let kind = if should_scan {
+                let contents = inspect_directory(&unit_dir)?;
+                if !contents.directories.is_empty() {
+                    bail!(
+                        "content directory contains nested directories: {}",
+                        unit_dir.display()
+                    );
+                }
+                if contents.images.is_empty() && contents.books.is_empty() {
+                    eprintln!(
+                        "warning: skipping empty content directory: {}",
+                        unit_dir.display()
+                    );
+                    continue;
+                }
+                if !contents.images.is_empty() && !contents.books.is_empty() {
+                    bail!(
+                        "content directory mixes comic images and text books: {}",
+                        unit_dir.display()
+                    );
+                }
+                if !contents.images.is_empty() {
+                    let image_count = contents.images.len();
+                    let title = display_name(&unit_dir);
+                    work.push(UnitWork::Comic {
+                        library_key: library_key.clone(),
+                        library_title: library_title.clone(),
+                        scan: ComicScan {
+                            path: unit_dir,
+                            rel: key,
+                            title,
+                            image_count,
+                        },
+                        image_paths: contents.images,
+                    });
+                    state::UnitKind::Comic
+                } else {
+                    let title = display_name(&unit_dir);
+                    work.push(UnitWork::Author {
+                        key,
+                        library_key: library_key.clone(),
+                        library_title: library_title.clone(),
+                        scan: AuthorScan {
+                            name: title,
+                            book_paths: contents.books,
+                        },
+                    });
+                    state::UnitKind::Author
+                }
+            } else {
+                cached_kind.expect("cached kind checked above")
+            };
+            if library_kind
+                .replace(kind)
+                .is_some_and(|existing| existing != kind)
+            {
+                bail!(
+                    "library mixes comic images and text books: {}",
+                    library_dir.display()
+                );
+            }
+        }
+    }
+
+    let removed_units = cached
+        .keys()
+        .filter(|key| !seen.contains(*key))
+        .cloned()
+        .collect();
+    Ok(UnitDiscovery {
+        work,
+        removed_units,
+    })
+}
+
+fn build_comic_unit(
+    ctx: &mut BuildContext,
+    database: &mut state::StateDb,
+    thumbnail_pool: &rayon::ThreadPool,
+    library_key: &str,
+    library_title: &str,
+    scan: ComicScan,
+    image_paths: Vec<PathBuf>,
+) -> Result<()> {
+    let unit_key = scan.rel.clone();
+    let title = scan.title.clone();
+    let before = ctx.progress.snapshot();
+    eprintln!("comic [{unit_key}] start ({} images)", image_paths.len());
+    sync_comic_tags(
+        ctx,
+        &scan.path,
+        &title,
+        !ctx.previous_state.comics.contains_key(&unit_key),
+    )?;
+    let thumbnail_dir = ctx.output.join(THUMBNAIL_DIR).join(&unit_key);
+    fs::create_dir_all(&thumbnail_dir)
+        .with_context(|| format!("create thumbnail directory: {}", thumbnail_dir.display()))?;
+
+    remove_unit_from_memory_state(&mut ctx.next_state, &unit_key);
+    let processed_images = thumbnail_pool.install(|| {
+        image_paths
+            .par_iter()
+            .map_init(ThumbnailWorker::new, |worker, path| {
+                process_image(ctx, path, worker)
+            })
+            .collect::<Result<Vec<_>>>()
+    })?;
+    let pending_start = ctx.pending_detail_manifests.len();
+    let summary = build_comic(ctx, scan, &mut processed_images.into_iter())?;
+    let files = unit_files(&ctx.next_state, &unit_key);
+    let comic_state = ctx
+        .next_state
+        .comics
+        .get(&unit_key)
+        .cloned()
+        .ok_or_else(|| anyhow!("missing completed comic state: {unit_key}"))?;
+    let pending = ctx.pending_detail_manifests[pending_start..].to_vec();
+    database.save_comic(state::ComicCommit {
+        unit: state::UnitIdentity {
+            key: &unit_key,
+            library_key,
+            library_title,
+            title: &title,
+        },
+        summary: &summary,
+        files: &files,
+        comic_state: &comic_state,
+        pending_outputs: &pending,
+    })?;
+    ctx.pending_detail_manifests.truncate(pending_start);
+    let after = ctx.progress.snapshot();
+    eprintln!(
+        "comic [{unit_key}] done ({} built, {} reused)",
+        after.built_thumbnails - before.built_thumbnails,
+        after.reused_thumbnails - before.reused_thumbnails
+    );
+    Ok(())
+}
+
+fn build_author_unit(
+    ctx: &mut BuildContext,
+    database: &mut state::StateDb,
+    unit_key: &str,
+    library_key: &str,
+    library_title: &str,
+    scan: AuthorScan,
+) -> Result<()> {
+    let title = scan.name.clone();
+    let book_count = scan.book_paths.len();
+    eprintln!("author [{unit_key}] start ({book_count} books)");
+    remove_unit_from_memory_state(&mut ctx.next_state, unit_key);
+    let pending_start = ctx.pending_detail_manifests.len();
+    let author = build_author(ctx, scan)?;
+    let files = unit_files(&ctx.next_state, unit_key);
+    let pending = ctx.pending_detail_manifests[pending_start..].to_vec();
+    database.save_author(state::AuthorCommit {
+        unit: state::UnitIdentity {
+            key: unit_key,
+            library_key,
+            library_title,
+            title: &title,
+        },
+        author: &author,
+        files: &files,
+        pending_outputs: &pending,
+    })?;
+    ctx.pending_detail_manifests.truncate(pending_start);
+    eprintln!("author [{unit_key}] done ({book_count} books)");
+    Ok(())
+}
+
+fn remove_unit_from_memory_state(build_state: &mut BuildState, unit_key: &str) {
+    let prefix = format!("{unit_key}/");
+    build_state
+        .files
+        .retain(|path, _| !path.starts_with(&prefix));
+    build_state.comics.remove(unit_key);
+}
+
+fn unit_files(build_state: &BuildState, unit_key: &str) -> Vec<(String, FileState)> {
+    let prefix = format!("{unit_key}/");
+    build_state
+        .files
+        .iter()
+        .filter(|(path, _)| path.starts_with(&prefix))
+        .map(|(path, state)| (path.clone(), state.clone()))
+        .collect()
+}
+
+fn assemble_libraries(units: Vec<state::CachedUnit>) -> Result<Vec<LibraryManifest>> {
+    enum Group {
+        Comics {
+            title: String,
+            comics: Vec<ComicSummaryManifest>,
+        },
+        Books {
+            title: String,
+            authors: Vec<AuthorManifest>,
+        },
+    }
+
+    let mut groups = BTreeMap::<String, Group>::new();
+    for unit in units {
+        match unit.kind {
+            state::UnitKind::Comic => {
+                let summary = unit
+                    .comic
+                    .ok_or_else(|| anyhow!("cached comic has no summary: {}", unit.key))?;
+                match groups.entry(unit.library_key) {
+                    std::collections::btree_map::Entry::Vacant(entry) => {
+                        entry.insert(Group::Comics {
+                            title: unit.library_title,
+                            comics: vec![summary],
+                        });
+                    }
+                    std::collections::btree_map::Entry::Occupied(mut entry) => {
+                        match entry.get_mut() {
+                            Group::Comics { comics, .. } => comics.push(summary),
+                            Group::Books { .. } => bail!("cached library mixes comics and books"),
+                        }
+                    }
+                }
+            }
+            state::UnitKind::Author => {
+                let author = unit
+                    .author
+                    .ok_or_else(|| anyhow!("cached author has no summary: {}", unit.key))?;
+                match groups.entry(unit.library_key) {
+                    std::collections::btree_map::Entry::Vacant(entry) => {
+                        entry.insert(Group::Books {
+                            title: unit.library_title,
+                            authors: vec![author],
+                        });
+                    }
+                    std::collections::btree_map::Entry::Occupied(mut entry) => {
+                        match entry.get_mut() {
+                            Group::Books { authors, .. } => authors.push(author),
+                            Group::Comics { .. } => bail!("cached library mixes comics and books"),
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(groups
+        .into_values()
+        .map(|group| match group {
+            Group::Comics { title, comics } => LibraryManifest::Comic { title, comics },
+            Group::Books { title, authors } => LibraryManifest::Book { title, authors },
+        })
+        .collect())
 }
 
 fn recommended_thumbnail_workers() -> usize {
@@ -647,157 +1121,6 @@ fn set_path_tags(path: &Path, tags: FileTags) -> Result<bool> {
     Ok(true)
 }
 
-fn collect_library_scans(ctx: &BuildContext) -> Result<(Vec<LibraryScan>, Vec<PathBuf>)> {
-    let root = inspect_directory(&ctx.source)?;
-    let mut libraries = Vec::new();
-    let mut image_paths = Vec::new();
-    for library_dir in root.directories {
-        if let Some(library) = collect_library_scan(ctx, &library_dir, &mut image_paths)? {
-            libraries.push(library);
-        }
-    }
-    Ok((libraries, image_paths))
-}
-
-fn collect_library_scan(
-    ctx: &BuildContext,
-    library_dir: &Path,
-    image_paths: &mut Vec<PathBuf>,
-) -> Result<Option<LibraryScan>> {
-    let title = display_name(library_dir);
-    let contents = inspect_directory(library_dir)?;
-    if !contents.images.is_empty() || !contents.books.is_empty() {
-        bail!(
-            "library contains content files directly; expected content directories: {}",
-            library_dir.display()
-        );
-    }
-    if contents.directories.is_empty() {
-        bail!(
-            "library has no content directories: {}",
-            library_dir.display()
-        );
-    }
-
-    let mut children = Vec::with_capacity(contents.directories.len());
-    for child_dir in &contents.directories {
-        let child = inspect_directory(child_dir)?;
-        if !child.directories.is_empty() {
-            bail!(
-                "content directory contains nested directories: {}",
-                child_dir.display()
-            );
-        }
-        if child.images.is_empty() && child.books.is_empty() {
-            eprintln!(
-                "warning: skipping empty content directory: {}",
-                child_dir.display()
-            );
-            continue;
-        }
-        if !child.images.is_empty() && !child.books.is_empty() {
-            bail!(
-                "content directory mixes comic images and text books: {}",
-                child_dir.display()
-            );
-        }
-        children.push((child_dir.clone(), child));
-    }
-
-    if children.is_empty() {
-        eprintln!(
-            "warning: skipping library with no valid content directories: {}",
-            library_dir.display()
-        );
-        return Ok(None);
-    }
-
-    let has_images = children.iter().any(|(_, child)| !child.images.is_empty());
-    let has_books = children.iter().any(|(_, child)| !child.books.is_empty());
-    if has_images && has_books {
-        bail!(
-            "library mixes comic images and text books: {}",
-            library_dir.display()
-        );
-    }
-
-    if has_books {
-        let mut authors = Vec::with_capacity(children.len());
-        for (author_dir, child) in children {
-            authors.push(AuthorScan {
-                name: display_name(&author_dir),
-                book_paths: child.books,
-            });
-        }
-        return Ok(Some(LibraryScan::Book { title, authors }));
-    }
-
-    let mut comics = Vec::with_capacity(children.len());
-    for (comic_dir, child) in children {
-        let rel = relative_key(&ctx.source, &comic_dir)?;
-        let comic_title = display_name(&comic_dir);
-        let is_new_comic = !ctx.previous_state.comics.contains_key(&rel);
-        sync_comic_tags(ctx, &comic_dir, &comic_title, is_new_comic)?;
-
-        let thumbnail_dir = ctx.output.join(THUMBNAIL_DIR).join(&rel);
-        fs::create_dir_all(&thumbnail_dir).with_context(|| {
-            format!(
-                "create thumbnail directory for comic: {}",
-                comic_dir.display()
-            )
-        })?;
-
-        let image_count = child.images.len();
-        image_paths.extend(child.images);
-        comics.push(ComicScan {
-            path: comic_dir,
-            rel,
-            title: comic_title,
-            image_count,
-        });
-    }
-    Ok(Some(LibraryScan::Comic { title, comics }))
-}
-
-fn build_libraries(
-    ctx: &mut BuildContext,
-    scans: Vec<LibraryScan>,
-    processed_images: Vec<ProcessedImage>,
-) -> Result<Vec<LibraryManifest>> {
-    let mut processed_images = processed_images.into_iter();
-    let mut libraries = Vec::with_capacity(scans.len());
-
-    for scan in scans {
-        match scan {
-            LibraryScan::Comic { title, comics } => {
-                let mut manifests = Vec::with_capacity(comics.len());
-                for comic in comics {
-                    manifests.push(build_comic(ctx, comic, &mut processed_images)?);
-                }
-                libraries.push(LibraryManifest::Comic {
-                    title,
-                    comics: manifests,
-                });
-            }
-            LibraryScan::Book { title, authors } => {
-                let mut manifests = Vec::with_capacity(authors.len());
-                for author in authors {
-                    manifests.push(build_author(ctx, author)?);
-                }
-                libraries.push(LibraryManifest::Book {
-                    title,
-                    authors: manifests,
-                });
-            }
-        }
-    }
-
-    if processed_images.next().is_some() {
-        bail!("internal error: unassigned processed image");
-    }
-    Ok(libraries)
-}
-
 fn build_comic(
     ctx: &mut BuildContext,
     scan: ComicScan,
@@ -834,7 +1157,8 @@ fn build_comic(
         fingerprint: detail_version.clone(),
     };
     let detail_unchanged = ctx.previous_state.comics.get(&rel) == Some(&comic_state)
-        && ctx.output.join(&detail_key).is_file();
+        && ctx.output.join(&detail_key).is_file()
+        && !ctx.units_with_pending_outputs.contains(&rel);
     ctx.next_state.comics.insert(rel.clone(), comic_state);
 
     if !detail_unchanged {
@@ -887,9 +1211,6 @@ fn process_image(
     let output_thumb = ctx.output.join(&thumbnail_key);
 
     let previous = ctx.previous_state.files.get(&rel);
-    if previous.is_some() {
-        ctx.matched_previous_files.fetch_add(1, Ordering::Relaxed);
-    }
     sync_image_tags(ctx, source_path, &rel, previous.is_none())?;
     let unchanged = previous.is_some_and(|state| {
         state.size == size
@@ -898,9 +1219,24 @@ fn process_image(
             && state.height.is_some()
     });
 
+    let recoverable_thumbnail = previous.is_none()
+        && output_thumb.is_file()
+        && ctx
+            .recovery_image_mtimes
+            .get(&rel)
+            .is_none_or(|published_mtime| *published_mtime == mtime_ms)
+        && output_thumb
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .ok()
+            .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+            .is_some_and(|modified| modified.as_millis() >= u128::from(mtime_ms));
     let (width, height, thumbnail_built) = if unchanged && output_thumb.is_file() {
         let state = previous.expect("checked above");
         (state.width.unwrap_or(0), state.height.unwrap_or(0), false)
+    } else if recoverable_thumbnail {
+        let (width, height) = read_image_dimensions(source_path)?;
+        (width, height, false)
     } else {
         let (width, height) = create_thumbnail(
             source_path,
@@ -931,6 +1267,40 @@ fn process_image(
     })
 }
 
+fn load_published_image_mtimes(output: &Path) -> Result<BTreeMap<String, u64>> {
+    let mut mtimes = BTreeMap::new();
+    for key in managed_files(output, COMIC_MANIFEST_DIR)? {
+        let path = output.join(&key);
+        let Ok(bytes) = fs::read(&path) else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+            continue;
+        };
+        let Some(pages) = value.get("pages").and_then(|pages| pages.as_array()) else {
+            continue;
+        };
+        for page in pages {
+            if let (Some(key), Some(mtime_ms)) = (
+                page.get("key").and_then(|key| key.as_str()),
+                page.get("mtimeMs").and_then(|mtime| mtime.as_u64()),
+            ) {
+                mtimes.insert(key.to_string(), mtime_ms);
+            }
+        }
+    }
+    Ok(mtimes)
+}
+
+fn read_image_dimensions(source: &Path) -> Result<(u32, u32)> {
+    ImageReader::open(source)
+        .with_context(|| format!("open image header: {}", source.display()))?
+        .with_guessed_format()
+        .with_context(|| format!("detect image format: {}", source.display()))?
+        .into_dimensions()
+        .with_context(|| format!("read image dimensions: {}", source.display()))
+}
+
 fn process_book(ctx: &mut BuildContext, source_path: &Path) -> Result<BookManifest> {
     let rel = relative_key(&ctx.source, source_path)?;
     let metadata = source_path
@@ -947,10 +1317,10 @@ fn process_book(ctx: &mut BuildContext, source_path: &Path) -> Result<BookManife
         height: None,
     };
     let previous = ctx.previous_state.files.get(&rel);
-    if previous.is_some() {
-        ctx.matched_previous_files.fetch_add(1, Ordering::Relaxed);
-    }
-    let detail_unchanged = previous == Some(&file_state) && ctx.output.join(&detail_key).is_file();
+    let unit_key = rel.rsplit_once('/').map_or(rel.as_str(), |(unit, _)| unit);
+    let detail_unchanged = previous == Some(&file_state)
+        && ctx.output.join(&detail_key).is_file()
+        && !ctx.units_with_pending_outputs.contains(unit_key);
     ctx.next_state.files.insert(rel.clone(), file_state);
 
     let title = book_title(source_path);
@@ -1150,6 +1520,9 @@ fn create_thumbnail(
     let tmp = dest.with_extension(format!("webp.{}.{seq}.tmp", std::process::id()));
     let encoder = webp::Encoder::from_rgb(&resized, target_width, target_height);
     let encoded = encoder.encode(f32::from(quality));
+    if fs::read(dest).is_ok_and(|existing| existing == *encoded) {
+        return Ok((original_width, original_height));
+    }
     if let Err(error) = fs::write(&tmp, &*encoded)
         .with_context(|| format!("write temporary thumbnail: {}", tmp.display()))
     {
@@ -1258,23 +1631,6 @@ fn resize_rgb(
     Ok(dst_image.into_vec())
 }
 
-fn load_build_state(output: &Path) -> Result<LoadedBuildState> {
-    let path = output.join(STATE_FILE);
-    if !path.exists() {
-        return Ok(LoadedBuildState {
-            state: BuildState::default(),
-            missing: true,
-        });
-    }
-    let raw = fs::read(&path).with_context(|| format!("read state: {}", path.display()))?;
-    let state = serde_json::from_slice(&raw)
-        .with_context(|| format!("parse current build state: {}", path.display()))?;
-    Ok(LoadedBuildState {
-        state,
-        missing: false,
-    })
-}
-
 fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     write_bytes_atomic(path, &serde_json::to_vec(value)?)
 }
@@ -1347,28 +1703,6 @@ fn comic_fingerprint(
 fn hash_field(hasher: &mut blake3::Hasher, value: &[u8]) {
     hasher.update(&(value.len() as u64).to_le_bytes());
     hasher.update(value);
-}
-
-fn cleanup_removed_outputs(ctx: &BuildContext) -> Result<()> {
-    for source_key in ctx.previous_state.files.keys() {
-        if ctx.next_state.files.contains_key(source_key) {
-            continue;
-        }
-        let source_path = Path::new(source_key);
-        if has_extension(source_path, IMAGE_EXTENSIONS) {
-            remove_generated_file(&ctx.output, &thumbnail_key_for(source_key))?;
-        } else if has_extension(source_path, BOOK_EXTENSIONS) {
-            let detail_key = detail_manifest_key_for(&strip_extension(source_key));
-            remove_generated_file(&ctx.output, &detail_key)?;
-        }
-    }
-
-    for (comic_path, previous) in &ctx.previous_state.comics {
-        if !ctx.next_state.comics.contains_key(comic_path) {
-            remove_generated_file(&ctx.output, &previous.detail_key)?;
-        }
-    }
-    Ok(())
 }
 
 fn cleanup_orphaned_outputs(ctx: &BuildContext) -> Result<()> {
@@ -1609,6 +1943,15 @@ mod tests {
 
     fn build_test_library(source: &Path) {
         build(test_build_args(source)).unwrap();
+    }
+
+    fn remove_sqlite_state(source: &Path) {
+        for name in ["state.sqlite3", "state.sqlite3-wal", "state.sqlite3-shm"] {
+            let path = source.join(".megumi").join(name);
+            if path.exists() {
+                fs::remove_file(path).unwrap();
+            }
+        }
     }
 
     fn write_test_image(path: &Path, color: [u8; 3]) {
@@ -1854,32 +2197,11 @@ mod tests {
         let second_thumbnail = source.join("thumbnail/Comics/One/002.webp");
         let initial_root_mtime = root_manifest.metadata().unwrap().modified().unwrap();
         let initial_comic_mtime = comic_manifest.metadata().unwrap().modified().unwrap();
-        let initial_state_mtime = source
-            .join(STATE_FILE)
-            .metadata()
-            .unwrap()
-            .modified()
-            .unwrap();
-        let state: serde_json::Value =
-            serde_json::from_slice(&fs::read(source.join(STATE_FILE)).unwrap()).unwrap();
-        assert!(state.get("version").is_none());
-        assert!(state.get("books").is_none());
-        assert!(state["files"]["Comics/One/001.png"].get("key").is_none());
-        assert!(
-            state["files"]["Comics/One/001.png"]
-                .get("thumbnailKey")
-                .is_none()
-        );
-        assert!(
-            state["files"]["Books/Author/One.txt"]
-                .get("thumbnailKey")
-                .is_none()
-        );
-        assert!(
-            state["comics"]["Comics/One"]["fingerprint"]
-                .as_str()
-                .is_some_and(|value| value.len() == 16)
-        );
+        let database = state::StateDb::open(source).unwrap();
+        let state = database.load_build_state().unwrap();
+        assert_eq!(state.files.len(), 4);
+        assert_eq!(state.comics["Comics/One"].fingerprint.len(), 16);
+        drop(database);
 
         thread::sleep(Duration::from_millis(20));
         build_test_library(source);
@@ -1892,16 +2214,6 @@ mod tests {
             comic_manifest.metadata().unwrap().modified().unwrap(),
             initial_comic_mtime
         );
-        assert_eq!(
-            source
-                .join(STATE_FILE)
-                .metadata()
-                .unwrap()
-                .modified()
-                .unwrap(),
-            initial_state_mtime
-        );
-
         fs::remove_file(second_page).unwrap();
         build_test_library(source);
         let reduced_detail: serde_json::Value =
@@ -2019,14 +2331,17 @@ mod tests {
         fs::create_dir_all(stale_manifest.parent().unwrap()).unwrap();
         fs::write(&stale_thumbnail, "stale").unwrap();
         fs::write(&stale_manifest, "stale").unwrap();
-        fs::remove_file(source.join(STATE_FILE)).unwrap();
+        remove_sqlite_state(source);
         thread::sleep(Duration::from_millis(20));
 
         build_test_library(source);
 
         assert!(!stale_thumbnail.exists());
         assert!(!stale_manifest.exists());
-        assert!(thumbnail.metadata().unwrap().modified().unwrap() > thumbnail_mtime);
+        assert_eq!(
+            thumbnail.metadata().unwrap().modified().unwrap(),
+            thumbnail_mtime
+        );
         assert!(source.join("manifests/Comics/One.json").is_file());
     }
 
@@ -2037,12 +2352,13 @@ mod tests {
         let second_page = source.join("Comics/One/002.png");
         let third_page = source.join("Comics/One/003.png");
         write_test_image(&second_page, [255, 0, 0]);
+        thread::sleep(Duration::from_millis(20));
         write_test_image(&third_page, [0, 255, 0]);
         build_test_library(source);
 
         let second_thumbnail = source.join("thumbnail/Comics/One/002.webp");
         let original_second_thumbnail = fs::read(&second_thumbnail).unwrap();
-        fs::remove_file(source.join(STATE_FILE)).unwrap();
+        remove_sqlite_state(source);
         thread::sleep(Duration::from_millis(20));
         fs::remove_file(&second_page).unwrap();
         fs::rename(&third_page, &second_page).unwrap();
@@ -2093,7 +2409,7 @@ mod tests {
     }
 
     #[test]
-    fn stale_or_malformed_state_fails_without_recovery() {
+    fn malformed_sqlite_state_is_backed_up_and_rebuilt() {
         let temp = TestDir::new();
         let source = &temp.0;
         write_test_image(&source.join("Comics/One/001.png"), [255, 0, 0]);
@@ -2101,28 +2417,19 @@ mod tests {
 
         let thumbnail = source.join("thumbnail/Comics/One/001.webp");
         let thumbnail_bytes = fs::read(&thumbnail).unwrap();
-        let mut current_state: serde_json::Value =
-            serde_json::from_slice(&fs::read(source.join(STATE_FILE)).unwrap()).unwrap();
-        fs::write(source.join(STATE_FILE), r#"{"files":{}}"#).unwrap();
+        remove_sqlite_state(source);
+        let database_path = source.join(".megumi/state.sqlite3");
+        fs::write(&database_path, "not sqlite").unwrap();
 
-        let stale = build(test_build_args(source)).unwrap_err().to_string();
-        assert!(stale.contains("parse current build state"));
+        build_test_library(source);
+
         assert_eq!(fs::read(&thumbnail).unwrap(), thumbnail_bytes);
-
-        fs::write(source.join(STATE_FILE), "not json").unwrap();
-        let malformed = build(test_build_args(source)).unwrap_err().to_string();
-        assert!(malformed.contains("parse current build state"));
-        assert_eq!(fs::read(&thumbnail).unwrap(), thumbnail_bytes);
-
-        current_state["version"] = serde_json::json!(4);
-        fs::write(
-            source.join(STATE_FILE),
-            serde_json::to_vec(&current_state).unwrap(),
-        )
-        .unwrap();
-        let unknown = build(test_build_args(source)).unwrap_err().to_string();
-        assert!(unknown.contains("parse current build state"));
-        assert_eq!(fs::read(thumbnail).unwrap(), thumbnail_bytes);
+        assert!(
+            fs::read_dir(source.join(".megumi"))
+                .unwrap()
+                .flatten()
+                .any(|entry| entry.file_name().to_string_lossy().contains("corrupt-"))
+        );
     }
 
     #[test]
@@ -2139,7 +2446,6 @@ mod tests {
         let before_thumbnail = fs::read(&thumbnail).unwrap();
         let before_manifest = fs::read(source.join(MANIFEST_FILE)).unwrap();
         let before_detail = fs::read(source.join("manifests/Comics/One.json")).unwrap();
-        let before_state = fs::read(source.join(STATE_FILE)).unwrap();
 
         thread::sleep(Duration::from_millis(20));
         write_test_image(&first_page, [0, 0, 255]);
@@ -2147,7 +2453,7 @@ mod tests {
 
         let error = build(test_build_args(source)).unwrap_err().to_string();
         assert!(error.contains("decode image"));
-        assert_ne!(fs::read(thumbnail).unwrap(), before_thumbnail);
+        assert_ne!(fs::read(&thumbnail).unwrap(), before_thumbnail);
         assert_eq!(
             fs::read(source.join(MANIFEST_FILE)).unwrap(),
             before_manifest
@@ -2156,7 +2462,14 @@ mod tests {
             fs::read(source.join("manifests/Comics/One.json")).unwrap(),
             before_detail
         );
-        assert_eq!(fs::read(source.join(STATE_FILE)).unwrap(), before_state);
+        let checkpointed_thumbnail_mtime = thumbnail.metadata().unwrap().modified().unwrap();
+        fs::remove_file(&second_page).unwrap();
+        write_test_image(&second_page, [0, 255, 0]);
+        build_test_library(source);
+        assert_eq!(
+            thumbnail.metadata().unwrap().modified().unwrap(),
+            checkpointed_thumbnail_mtime
+        );
     }
 
     #[test]

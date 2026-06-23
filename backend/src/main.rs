@@ -27,7 +27,6 @@ const THUMBNAIL_WIDTH: u32 = 256;
 const THUMBNAIL_QUALITY: u8 = 72;
 const IMAGE_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png"];
 const BOOK_EXTENSIONS: &[&str] = &["txt"];
-const PROGRESS_REPORT_INTERVAL: usize = 500;
 const FULL_SCAN_INTERVAL_MS: u64 = 30 * 24 * 60 * 60 * 1000;
 #[cfg(target_os = "macos")]
 const TAG_KEY: &str = "com.apple.metadata:_kMDItemUserTags";
@@ -195,12 +194,6 @@ struct ComicState {
     fingerprint: String,
 }
 
-#[derive(Debug, Clone)]
-struct PendingOutput {
-    output_path: PathBuf,
-    data: Vec<u8>,
-}
-
 struct ProcessedImage {
     page: PageManifest,
     state_key: String,
@@ -235,23 +228,19 @@ impl ThumbnailWorker {
 
 #[derive(Debug)]
 struct BuildProgress {
-    processed_images: AtomicUsize,
     built_thumbnails: AtomicUsize,
     reused_thumbnails: AtomicUsize,
     synced_tag_targets: AtomicUsize,
     changed_tag_targets: AtomicUsize,
-    report_every: usize,
 }
 
 impl BuildProgress {
-    fn new(report_every: usize) -> Self {
+    fn new() -> Self {
         Self {
-            processed_images: AtomicUsize::new(0),
             built_thumbnails: AtomicUsize::new(0),
             reused_thumbnails: AtomicUsize::new(0),
             synced_tag_targets: AtomicUsize::new(0),
             changed_tag_targets: AtomicUsize::new(0),
-            report_every,
         }
     }
 
@@ -261,7 +250,6 @@ impl BuildProgress {
         } else {
             self.reused_thumbnails.fetch_add(1, Ordering::Relaxed);
         }
-        self.report_if_due(self.processed_images.fetch_add(1, Ordering::Relaxed) + 1);
     }
 
     fn record_tag_sync(&self, changed: bool) {
@@ -271,19 +259,8 @@ impl BuildProgress {
         }
     }
 
-    fn report_if_due(&self, processed: usize) {
-        if self.report_every > 0 && processed.is_multiple_of(self.report_every) {
-            eprintln!(
-                "processed {processed} images ({} thumbnails built, {} reused)",
-                self.built_thumbnails.load(Ordering::Relaxed),
-                self.reused_thumbnails.load(Ordering::Relaxed)
-            );
-        }
-    }
-
     fn snapshot(&self) -> BuildProgressSnapshot {
         BuildProgressSnapshot {
-            processed_images: self.processed_images.load(Ordering::Relaxed),
             built_thumbnails: self.built_thumbnails.load(Ordering::Relaxed),
             reused_thumbnails: self.reused_thumbnails.load(Ordering::Relaxed),
         }
@@ -292,7 +269,6 @@ impl BuildProgress {
 
 #[derive(Debug)]
 struct BuildProgressSnapshot {
-    processed_images: usize,
     built_thumbnails: usize,
     reused_thumbnails: usize,
 }
@@ -303,11 +279,9 @@ struct BuildContext {
     output: PathBuf,
     previous_state: BuildState,
     next_state: BuildState,
-    pending_detail_manifests: Vec<PendingOutput>,
     progress: BuildProgress,
     remote_tags: Option<RemoteTags>,
     recovery_image_mtimes: BTreeMap<String, u64>,
-    units_with_pending_outputs: BTreeSet<String>,
 }
 
 fn main() -> Result<()> {
@@ -413,11 +387,9 @@ fn build(args: BuildArgs) -> Result<()> {
         output: output.clone(),
         previous_state,
         next_state,
-        pending_detail_manifests: Vec::new(),
-        progress: BuildProgress::new(PROGRESS_REPORT_INTERVAL),
+        progress: BuildProgress::new(),
         remote_tags,
         recovery_image_mtimes,
-        units_with_pending_outputs: database.units_with_pending_outputs()?,
     };
     sync_cached_tag_changes(&ctx, &cached_units)?;
 
@@ -489,17 +461,13 @@ fn build(args: BuildArgs) -> Result<()> {
         libraries,
     };
 
-    let mut pending_outputs = database.pending_outputs()?;
-    commit_pending_outputs(&mut pending_outputs)?;
     write_manifest_if_changed(&ctx.output.join(MANIFEST_FILE), &manifest)?;
     cleanup_orphaned_outputs(&ctx)?;
-    database.clear_pending_outputs()?;
     database.set_applied_tags(ctx.remote_tags.as_ref())?;
     database.mark_initialized()?;
     database.set_volume_device(volume_device)?;
     database.set_event_cursor(fsevents::current_cursor())?;
 
-    let progress = ctx.progress.snapshot();
     let synced_tag_targets = ctx.progress.synced_tag_targets.load(Ordering::Relaxed);
     if synced_tag_targets > 0 {
         eprintln!(
@@ -508,12 +476,9 @@ fn build(args: BuildArgs) -> Result<()> {
         );
     }
     println!(
-        "built {} with {} tracked source files; processed {} images ({} thumbnails built, {} reused)",
+        "built {} with {} tracked source files",
         ctx.output.join(MANIFEST_FILE).display(),
-        ctx.next_state.files.len(),
-        progress.processed_images,
-        progress.built_thumbnails,
-        progress.reused_thumbnails
+        ctx.next_state.files.len()
     );
     Ok(())
 }
@@ -736,7 +701,6 @@ fn build_comic_unit(
             })
             .collect::<Result<Vec<_>>>()
     })?;
-    let pending_start = ctx.pending_detail_manifests.len();
     let summary = build_comic(ctx, scan, &mut processed_images.into_iter())?;
     let files = unit_files(&ctx.next_state, &unit_key);
     let comic_state = ctx
@@ -745,7 +709,6 @@ fn build_comic_unit(
         .get(&unit_key)
         .cloned()
         .ok_or_else(|| anyhow!("missing completed comic state: {unit_key}"))?;
-    let pending = ctx.pending_detail_manifests[pending_start..].to_vec();
     database.save_comic(state::ComicCommit {
         unit: state::UnitIdentity {
             key: &unit_key,
@@ -756,9 +719,7 @@ fn build_comic_unit(
         summary: &summary,
         files: &files,
         comic_state: &comic_state,
-        pending_outputs: &pending,
     })?;
-    ctx.pending_detail_manifests.truncate(pending_start);
     let after = ctx.progress.snapshot();
     eprintln!(
         "comic [{unit_key}] done ({} built, {} reused)",
@@ -780,10 +741,8 @@ fn build_author_unit(
     let book_count = scan.book_paths.len();
     eprintln!("author [{unit_key}] start ({book_count} books)");
     remove_unit_from_memory_state(&mut ctx.next_state, unit_key);
-    let pending_start = ctx.pending_detail_manifests.len();
     let author = build_author(ctx, scan)?;
     let files = unit_files(&ctx.next_state, unit_key);
-    let pending = ctx.pending_detail_manifests[pending_start..].to_vec();
     database.save_author(state::AuthorCommit {
         unit: state::UnitIdentity {
             key: unit_key,
@@ -793,9 +752,7 @@ fn build_author_unit(
         },
         author: &author,
         files: &files,
-        pending_outputs: &pending,
     })?;
-    ctx.pending_detail_manifests.truncate(pending_start);
     eprintln!("author [{unit_key}] done ({book_count} books)");
     Ok(())
 }
@@ -1157,8 +1114,7 @@ fn build_comic(
         fingerprint: detail_version.clone(),
     };
     let detail_unchanged = ctx.previous_state.comics.get(&rel) == Some(&comic_state)
-        && ctx.output.join(&detail_key).is_file()
-        && !ctx.units_with_pending_outputs.contains(&rel);
+        && ctx.output.join(&detail_key).is_file();
     ctx.next_state.comics.insert(rel.clone(), comic_state);
 
     if !detail_unchanged {
@@ -1167,12 +1123,7 @@ fn build_comic(
             title: title.clone(),
             pages,
         };
-        queue_json_output(
-            &ctx.output,
-            &detail_key,
-            &manifest,
-            &mut ctx.pending_detail_manifests,
-        )?;
+        write_json_output_if_changed(&ctx.output, &detail_key, &manifest)?;
     }
 
     Ok(ComicSummaryManifest {
@@ -1303,6 +1254,8 @@ fn read_image_dimensions(source: &Path) -> Result<(u32, u32)> {
 
 fn process_book(ctx: &mut BuildContext, source_path: &Path) -> Result<BookManifest> {
     let rel = relative_key(&ctx.source, source_path)?;
+    let book_key = strip_extension(&rel);
+    eprintln!("book [{book_key}] start");
     let metadata = source_path
         .metadata()
         .with_context(|| format!("read metadata: {}", source_path.display()))?;
@@ -1317,10 +1270,7 @@ fn process_book(ctx: &mut BuildContext, source_path: &Path) -> Result<BookManife
         height: None,
     };
     let previous = ctx.previous_state.files.get(&rel);
-    let unit_key = rel.rsplit_once('/').map_or(rel.as_str(), |(unit, _)| unit);
-    let detail_unchanged = previous == Some(&file_state)
-        && ctx.output.join(&detail_key).is_file()
-        && !ctx.units_with_pending_outputs.contains(unit_key);
+    let detail_unchanged = previous == Some(&file_state) && ctx.output.join(&detail_key).is_file();
     ctx.next_state.files.insert(rel.clone(), file_state);
 
     let title = book_title(source_path);
@@ -1334,13 +1284,9 @@ fn process_book(ctx: &mut BuildContext, source_path: &Path) -> Result<BookManife
             line_count: content.line_count,
             chapters: content.chapters,
         };
-        queue_json_output(
-            &ctx.output,
-            &detail_key,
-            &manifest,
-            &mut ctx.pending_detail_manifests,
-        )?;
+        write_json_output_if_changed(&ctx.output, &detail_key, &manifest)?;
     }
+    eprintln!("book [{book_key}] done");
 
     Ok(BookManifest {
         title,
@@ -1658,26 +1604,13 @@ fn write_bytes_atomic(path: &Path, data: &[u8]) -> Result<()> {
     Ok(())
 }
 
-fn queue_json_output<T: Serialize>(
-    output: &Path,
-    key: &str,
-    value: &T,
-    pending_outputs: &mut Vec<PendingOutput>,
-) -> Result<()> {
-    pending_outputs.push(PendingOutput {
-        output_path: output.join(key),
-        data: serde_json::to_vec(value)?,
-    });
-    Ok(())
-}
-
-fn commit_pending_outputs(pending_outputs: &mut Vec<PendingOutput>) -> Result<()> {
-    for pending in pending_outputs.drain(..) {
-        if fs::read(&pending.output_path).is_ok_and(|existing| existing == pending.data) {
-            continue;
-        }
-        write_bytes_atomic(&pending.output_path, &pending.data)?;
+fn write_json_output_if_changed<T: Serialize>(output: &Path, key: &str, value: &T) -> Result<()> {
+    let path = output.join(key);
+    let data = serde_json::to_vec(value)?;
+    if fs::read(&path).is_ok_and(|existing| existing == data) {
+        return Ok(());
     }
+    write_bytes_atomic(&path, &data)?;
     Ok(())
 }
 
@@ -2433,7 +2366,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_build_keeps_immediate_thumbnails_but_preserves_manifests_and_state() {
+    fn failed_build_keeps_immediate_unit_outputs_but_preserves_root_manifest() {
         let temp = TestDir::new();
         let source = &temp.0;
         let first_page = source.join("Comics/One/001.png");
@@ -2458,7 +2391,7 @@ mod tests {
             fs::read(source.join(MANIFEST_FILE)).unwrap(),
             before_manifest
         );
-        assert_eq!(
+        assert_ne!(
             fs::read(source.join("manifests/Comics/One.json")).unwrap(),
             before_detail
         );

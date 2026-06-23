@@ -124,6 +124,7 @@ fn record_path_change(root: &Path, path: &Path, batch: &mut ChangeBatch) {
         return;
     }
     if parts.len() < 2 {
+        batch.requires_full_scan = true;
         return;
     }
     batch.unit_keys.insert(format!("{}/{}", parts[0], parts[1]));
@@ -164,6 +165,16 @@ mod tests {
             &mut batch,
         );
         assert!(batch.unit_keys.is_empty());
+        assert!(!batch.requires_full_scan);
+    }
+
+    #[test]
+    fn library_level_changes_require_full_scan() {
+        let root = Path::new("/library");
+        let mut batch = ChangeBatch::default();
+        record_path_change(root, Path::new("/library/Comics"), &mut batch);
+        assert!(batch.unit_keys.is_empty());
+        assert!(batch.requires_full_scan);
     }
 
     #[test]

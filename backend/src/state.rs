@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -6,13 +6,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result, anyhow, bail};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
-use crate::{
-    AuthorManifest, BuildState, ComicState, ComicSummaryManifest, FileState, PendingOutput,
-    RemoteTags,
-};
+use crate::{AuthorManifest, BuildState, ComicState, ComicSummaryManifest, FileState, RemoteTags};
 
 const DATABASE_FILE: &str = ".megumi/state.sqlite3";
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnitKind {
@@ -60,14 +57,12 @@ pub struct ComicCommit<'a> {
     pub summary: &'a ComicSummaryManifest,
     pub files: &'a [(String, FileState)],
     pub comic_state: &'a ComicState,
-    pub pending_outputs: &'a [PendingOutput],
 }
 
 pub struct AuthorCommit<'a> {
     pub unit: UnitIdentity<'a>,
     pub author: &'a AuthorManifest,
     pub files: &'a [(String, FileState)],
-    pub pending_outputs: &'a [PendingOutput],
 }
 
 pub struct StateDb {
@@ -337,7 +332,6 @@ impl StateDb {
                 commit.comic_state.fingerprint
             ],
         )?;
-        replace_pending_outputs(&transaction, unit.key, commit.pending_outputs)?;
         transaction.execute("DELETE FROM dirty_units WHERE unit_key = ?1", [unit.key])?;
         transaction.commit()?;
         Ok(())
@@ -357,7 +351,6 @@ impl StateDb {
         )?;
         replace_unit_files(&transaction, unit.key, commit.files)?;
         transaction.execute("DELETE FROM comics WHERE unit_key = ?1", [unit.key])?;
-        replace_pending_outputs(&transaction, unit.key, commit.pending_outputs)?;
         transaction.execute("DELETE FROM dirty_units WHERE unit_key = ?1", [unit.key])?;
         transaction.commit()?;
         Ok(())
@@ -368,34 +361,6 @@ impl StateDb {
         transaction.execute("DELETE FROM units WHERE unit_key = ?1", [unit_key])?;
         transaction.execute("DELETE FROM dirty_units WHERE unit_key = ?1", [unit_key])?;
         transaction.commit()?;
-        Ok(())
-    }
-
-    pub fn pending_outputs(&self) -> Result<Vec<PendingOutput>> {
-        let mut statement = self
-            .connection
-            .prepare("SELECT output_path, data FROM pending_outputs ORDER BY output_path")?;
-        let rows = statement.query_map([], |row| {
-            Ok(PendingOutput {
-                output_path: PathBuf::from(row.get::<_, String>(0)?),
-                data: row.get(1)?,
-            })
-        })?;
-        rows.collect::<rusqlite::Result<Vec<_>>>()
-            .context("read pending manifest outputs")
-    }
-
-    pub fn units_with_pending_outputs(&self) -> Result<BTreeSet<String>> {
-        let mut statement = self
-            .connection
-            .prepare("SELECT DISTINCT unit_key FROM pending_outputs ORDER BY unit_key")?;
-        let rows = statement.query_map([], |row| row.get(0))?;
-        rows.collect::<rusqlite::Result<BTreeSet<_>>>()
-            .context("read content units with pending manifests")
-    }
-
-    pub fn clear_pending_outputs(&mut self) -> Result<()> {
-        self.connection.execute("DELETE FROM pending_outputs", [])?;
         Ok(())
     }
 
@@ -483,11 +448,6 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
          CREATE TABLE IF NOT EXISTS dirty_units(
              unit_key TEXT PRIMARY KEY
          );
-         CREATE TABLE IF NOT EXISTS pending_outputs(
-             output_path TEXT PRIMARY KEY,
-             unit_key TEXT NOT NULL REFERENCES units(unit_key) ON DELETE CASCADE,
-             data BLOB NOT NULL
-         );
          PRAGMA foreign_keys=ON;
          PRAGMA user_version={SCHEMA_VERSION};
          COMMIT;"
@@ -555,21 +515,6 @@ fn upsert_unit(
     Ok(())
 }
 
-fn replace_pending_outputs(
-    transaction: &Transaction<'_>,
-    unit_key: &str,
-    outputs: &[PendingOutput],
-) -> Result<()> {
-    transaction.execute("DELETE FROM pending_outputs WHERE unit_key=?1", [unit_key])?;
-    for output in outputs {
-        transaction.execute(
-            "INSERT INTO pending_outputs(output_path, unit_key, data) VALUES (?1, ?2, ?3)",
-            params![output.output_path.to_string_lossy(), unit_key, output.data],
-        )?;
-    }
-    Ok(())
-}
-
 pub fn now_ms() -> Result<u64> {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -618,7 +563,6 @@ mod tests {
             summary: &summary,
             files: &files,
             comic_state: &comic,
-            pending_outputs: &[],
         })
         .unwrap();
 

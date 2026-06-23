@@ -87,15 +87,7 @@ impl StateDb {
 
         let connection = Connection::open(&path)
             .with_context(|| format!("open build state: {}", path.display()))?;
-        connection
-            .pragma_update(None, "journal_mode", "WAL")
-            .context("enable SQLite WAL mode")?;
-        connection
-            .pragma_update(None, "synchronous", "FULL")
-            .context("set SQLite synchronous mode")?;
-        connection
-            .busy_timeout(std::time::Duration::from_secs(5))
-            .context("set SQLite busy timeout")?;
+        configure_connection(&connection)?;
 
         let version: i64 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
@@ -117,9 +109,7 @@ impl StateDb {
     fn open_fresh(path: PathBuf, rebuilt: bool) -> Result<Self> {
         let connection = Connection::open(&path)
             .with_context(|| format!("create build state: {}", path.display()))?;
-        connection.pragma_update(None, "journal_mode", "WAL")?;
-        connection.pragma_update(None, "synchronous", "FULL")?;
-        connection.busy_timeout(std::time::Duration::from_secs(5))?;
+        configure_connection(&connection)?;
         initialize_schema(&connection)?;
         Ok(Self {
             connection,
@@ -394,6 +384,22 @@ fn database_is_usable(path: &Path) -> bool {
     matches!(check, Ok(value) if value == "ok")
 }
 
+fn configure_connection(connection: &Connection) -> Result<()> {
+    connection
+        .pragma_update(None, "journal_mode", "WAL")
+        .context("enable SQLite WAL mode")?;
+    connection
+        .pragma_update(None, "synchronous", "FULL")
+        .context("set SQLite synchronous mode")?;
+    connection
+        .pragma_update(None, "foreign_keys", "ON")
+        .context("enable SQLite foreign keys")?;
+    connection
+        .busy_timeout(std::time::Duration::from_secs(5))
+        .context("set SQLite busy timeout")?;
+    Ok(())
+}
+
 fn backup_database(path: &Path) -> Result<()> {
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -448,7 +454,6 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
          CREATE TABLE IF NOT EXISTS dirty_units(
              unit_key TEXT PRIMARY KEY
          );
-         PRAGMA foreign_keys=ON;
          PRAGMA user_version={SCHEMA_VERSION};
          COMMIT;"
         ))
@@ -568,6 +573,54 @@ mod tests {
 
         assert_eq!(db.load_units().unwrap().len(), 1);
         assert_eq!(db.load_build_state().unwrap().files.len(), 1);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn removing_a_unit_cascades_files_and_comic_state() {
+        let root =
+            std::env::temp_dir().join(format!("megumi-state-test-{}-cascade", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let mut db = StateDb::open(&root).unwrap();
+        let summary = ComicSummaryManifest {
+            title: "One".into(),
+            cover_key: "thumbnail/Comics/One/001.webp".into(),
+            cover_mtime_ms: 1,
+            detail_version: "abc".into(),
+        };
+        let comic = ComicState {
+            detail_key: "manifests/Comics/One.json".into(),
+            fingerprint: "abc".into(),
+        };
+        let files = [(
+            "Comics/One/001.jpg".into(),
+            FileState {
+                size: 10,
+                mtime_ms: 1,
+                width: Some(10),
+                height: Some(20),
+            },
+        )];
+        db.save_comic(ComicCommit {
+            unit: UnitIdentity {
+                key: "Comics/One",
+                library_key: "Comics",
+                library_title: "Comics",
+                title: "One",
+            },
+            summary: &summary,
+            files: &files,
+            comic_state: &comic,
+        })
+        .unwrap();
+
+        db.remove_unit("Comics/One").unwrap();
+
+        let state = db.load_build_state().unwrap();
+        assert!(db.load_units().unwrap().is_empty());
+        assert!(state.files.is_empty());
+        assert!(state.comics.is_empty());
         let _ = fs::remove_dir_all(root);
     }
 }

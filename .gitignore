@@ -41,7 +41,9 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-/docs/
+/docs/*
+!/docs/adr/
+!/docs/adr/*.md
 /backend/target/
 /worker/node_modules/
 /frontend/node_modules/

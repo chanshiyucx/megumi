@@ -1,0 +1,3 @@
+# Content Unit Checkpoints And Root Manifest Publishing
+
+Megumi builds large local libraries where a build may be interrupted or fail after some content units have already completed. We checkpoint each completed content unit immediately by writing its thumbnails, detail manifest, and SQLite state, but only publish the root `manifest.json` after every dirty content unit succeeds. This keeps rebuilds resumable while preserving the root manifest as the reader-visible publication boundary; orphan cleanup also waits for a successful full publish because the final output set is not trustworthy while dirty content units remain unfinished.

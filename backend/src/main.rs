@@ -1,11 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::{self, File};
-use std::io::{BufRead, BufReader, Cursor};
+use std::fs::{self, File, OpenOptions};
+use std::io::{BufRead, BufReader, Cursor, Write};
+use std::os::raw::c_int;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Parser, Subcommand};
@@ -21,6 +22,7 @@ mod state;
 const MANIFEST_FILE: &str = "manifest.json";
 const COMIC_MANIFEST_DIR: &str = "manifests";
 const TAGS_FILE: &str = ".megumi/tags.json";
+const BUILD_LOCK_FILE: &str = ".megumi/build.lock";
 const THUMBNAIL_DIR: &str = "thumbnail";
 const SCHEMA_VERSION: u32 = 4;
 const THUMBNAIL_WIDTH: u32 = 256;
@@ -28,6 +30,7 @@ const THUMBNAIL_QUALITY: u8 = 72;
 const IMAGE_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png"];
 const BOOK_EXTENSIONS: &[&str] = &["txt"];
 const FULL_SCAN_INTERVAL_MS: u64 = 30 * 24 * 60 * 60 * 1000;
+const MAX_THUMBNAIL_WORKERS: usize = 8;
 #[cfg(target_os = "macos")]
 const TAG_KEY: &str = "com.apple.metadata:_kMDItemUserTags";
 #[cfg(target_os = "macos")]
@@ -41,8 +44,13 @@ const DELETE_TAG_NAME: &str = "DELETE";
 #[cfg(target_os = "macos")]
 const DELETE_TAG_VALUE: &str = "DELETE\n6";
 static THUMB_TMP_SEQ: AtomicU64 = AtomicU64::new(0);
+static JSON_TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 static INTERRUPT_COUNT: AtomicUsize = AtomicUsize::new(0);
 static INTERRUPT_HANDLER: OnceLock<()> = OnceLock::new();
+
+unsafe extern "C" {
+    fn kill(pid: c_int, sig: c_int) -> c_int;
+}
 
 #[derive(Parser)]
 #[command(name = "megumi-backend")]
@@ -292,6 +300,7 @@ fn main() -> Result<()> {
 }
 
 fn build(args: BuildArgs) -> Result<()> {
+    let build_started = Instant::now();
     install_interrupt_handler()?;
     INTERRUPT_COUNT.store(0, Ordering::SeqCst);
     let source = args
@@ -302,8 +311,11 @@ fn build(args: BuildArgs) -> Result<()> {
         bail!("source is not a directory: {}", source.display());
     }
 
+    let _build_lock = acquire_build_lock(&source)?;
     let output = source.clone();
+    let phase_started = Instant::now();
     let mut database = state::StateDb::open(&output)?;
+    log_phase_elapsed("state open", phase_started);
     let now_ms = state::now_ms()?;
     let volume_device = source.metadata()?.dev();
     let volume_changed = database
@@ -317,6 +329,7 @@ fn build(args: BuildArgs) -> Result<()> {
         database.was_rebuilt() || previous_cursor.is_none() || periodic_scan_due || volume_changed;
     let mut cursor = fsevents::current_cursor();
 
+    let phase_started = Instant::now();
     if let Some(previous_cursor) = previous_cursor
         && !full_scan
     {
@@ -329,26 +342,27 @@ fn build(args: BuildArgs) -> Result<()> {
             Ok(_) => {
                 eprintln!("warning: FSEvents history is incomplete; performing a full scan");
                 full_scan = true;
-                database.set_event_cursor(cursor)?;
             }
             Err(error) => {
                 eprintln!(
                     "warning: cannot read FSEvents history ({error:#}); performing a full scan"
                 );
                 full_scan = true;
-                database.set_event_cursor(cursor)?;
             }
         }
-    } else {
-        database.set_event_cursor(cursor)?;
     }
+    log_phase_elapsed("change detection", phase_started);
 
+    let phase_started = Instant::now();
     let cached_units = database
         .load_units()?
         .into_iter()
         .map(|unit| (unit.key.clone(), unit))
         .collect::<BTreeMap<_, _>>();
     let dirty_units = database.dirty_units()?.into_iter().collect::<BTreeSet<_>>();
+    log_phase_elapsed("state index load", phase_started);
+
+    let phase_started = Instant::now();
     let discovery = discover_units(&source, &cached_units, &dirty_units, full_scan)?;
     for removed in &discovery.removed_units {
         database.remove_unit(removed)?;
@@ -361,7 +375,6 @@ fn build(args: BuildArgs) -> Result<()> {
         .collect::<Vec<_>>();
     database.enqueue_changes(&work_keys, cursor)?;
     if full_scan {
-        database.record_full_scan(now_ms)?;
         eprintln!("full scan scheduled {} content units", work_keys.len());
     } else {
         eprintln!(
@@ -369,7 +382,9 @@ fn build(args: BuildArgs) -> Result<()> {
             work_keys.len()
         );
     }
+    log_phase_elapsed("discovery", phase_started);
 
+    let phase_started = Instant::now();
     let previous_state = database.load_build_state()?;
     let remote_tags = load_remote_tags(&source)?;
     let applied_tags = remote_tags
@@ -391,12 +406,17 @@ fn build(args: BuildArgs) -> Result<()> {
         remote_tags,
         recovery_image_mtimes,
     };
+    log_phase_elapsed("build state load", phase_started);
+
+    let phase_started = Instant::now();
     sync_cached_tag_changes(&ctx, &cached_units)?;
+    log_phase_elapsed("tag sync", phase_started);
 
     let thumbnail_pool = rayon::ThreadPoolBuilder::new()
         .num_threads(recommended_thumbnail_workers())
         .build()
         .context("create thumbnail worker pool")?;
+    let phase_started = Instant::now();
     let mut errors = Vec::new();
     for work in discovery.work {
         if INTERRUPT_COUNT.load(Ordering::SeqCst) > 0 {
@@ -438,8 +458,14 @@ fn build(args: BuildArgs) -> Result<()> {
             errors.push(format!("{error:#}"));
         }
     }
+    let unfinished_units = database.dirty_units()?.len();
+    if errors.is_empty() && unfinished_units == 0 {
+        log_phase_elapsed("content units", phase_started);
+    } else {
+        log_phase_elapsed_with_status("content units", "stopped", phase_started);
+    }
 
-    if !errors.is_empty() || !database.dirty_units()?.is_empty() {
+    if !errors.is_empty() || unfinished_units > 0 {
         let details = if errors.is_empty() {
             String::new()
         } else {
@@ -447,11 +473,12 @@ fn build(args: BuildArgs) -> Result<()> {
         };
         bail!(
             "build did not publish because {} content unit(s) remain unfinished{}",
-            database.dirty_units()?.len(),
+            unfinished_units,
             details
         );
     }
 
+    let phase_started = Instant::now();
     let libraries = assemble_libraries(database.load_units()?)?;
     ctx.next_state = database.load_build_state()?;
     warn_missing_tag_targets(&ctx);
@@ -460,13 +487,25 @@ fn build(args: BuildArgs) -> Result<()> {
         generated_at: now_rfc3339()?,
         libraries,
     };
+    log_phase_elapsed("manifest assembly", phase_started);
 
+    let phase_started = Instant::now();
     write_manifest_if_changed(&ctx.output.join(MANIFEST_FILE), &manifest)?;
+    log_phase_elapsed("root manifest publish", phase_started);
+
+    let phase_started = Instant::now();
     cleanup_orphaned_outputs(&ctx)?;
+    log_phase_elapsed("cleanup", phase_started);
+
+    let phase_started = Instant::now();
     database.set_applied_tags(ctx.remote_tags.as_ref())?;
+    if full_scan {
+        database.record_full_scan(now_ms)?;
+    }
     database.mark_initialized()?;
     database.set_volume_device(volume_device)?;
     database.set_event_cursor(fsevents::current_cursor())?;
+    log_phase_elapsed("state metadata commit", phase_started);
 
     let synced_tag_targets = ctx.progress.synced_tag_targets.load(Ordering::Relaxed);
     if synced_tag_targets > 0 {
@@ -480,7 +519,90 @@ fn build(args: BuildArgs) -> Result<()> {
         ctx.output.join(MANIFEST_FILE).display(),
         ctx.next_state.files.len()
     );
+    log_phase_elapsed("build", build_started);
     Ok(())
+}
+
+fn log_phase_elapsed(label: &str, started: Instant) {
+    log_phase_elapsed_with_status(label, "done", started);
+}
+
+fn log_phase_elapsed_with_status(label: &str, status: &str, started: Instant) {
+    eprintln!("{label} {status} ({} ms)", started.elapsed().as_millis());
+}
+
+#[derive(Debug)]
+struct BuildLock {
+    path: PathBuf,
+    pid: u32,
+}
+
+impl Drop for BuildLock {
+    fn drop(&mut self) {
+        if read_lock_pid(&self.path).ok().flatten() == Some(self.pid) {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+}
+
+fn acquire_build_lock(source: &Path) -> Result<BuildLock> {
+    let path = source.join(BUILD_LOCK_FILE);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("create build lock directory: {}", parent.display()))?;
+    }
+
+    let pid = std::process::id();
+    loop {
+        match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(mut file) => {
+                writeln!(file, "{pid}")
+                    .with_context(|| format!("write build lock: {}", path.display()))?;
+                return Ok(BuildLock { path, pid });
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                if let Some(owner_pid) = read_lock_pid(&path)?
+                    && process_exists(owner_pid)
+                {
+                    bail!(
+                        "build already running for {} (pid {owner_pid})",
+                        source.display()
+                    );
+                }
+                match fs::remove_file(&path) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => {
+                        return Err(error).with_context(|| {
+                            format!("remove stale build lock: {}", path.display())
+                        });
+                    }
+                }
+            }
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("create build lock: {}", path.display()));
+            }
+        }
+    }
+}
+
+fn read_lock_pid(path: &Path) -> Result<Option<u32>> {
+    match fs::read_to_string(path) {
+        Ok(contents) => Ok(contents
+            .lines()
+            .next()
+            .and_then(|line| line.trim().parse().ok())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error).with_context(|| format!("read build lock: {}", path.display())),
+    }
+}
+
+fn process_exists(pid: u32) -> bool {
+    if pid == 0 || pid > c_int::MAX as u32 {
+        return false;
+    }
+    unsafe { kill(pid as c_int, 0) == 0 }
 }
 
 fn install_interrupt_handler() -> Result<()> {
@@ -591,7 +713,6 @@ fn discover_units(
         let mut library_kind = None;
         for unit_dir in library.directories {
             let key = relative_key(source, &unit_dir)?;
-            seen.insert(key.clone());
             let cached_kind = cached.get(&key).map(|unit| unit.kind);
             let should_scan = full_scan || dirty.contains(&key) || cached_kind.is_none();
             let kind = if should_scan {
@@ -609,6 +730,7 @@ fn discover_units(
                     );
                     continue;
                 }
+                seen.insert(key.clone());
                 if !contents.images.is_empty() && !contents.books.is_empty() {
                     bail!(
                         "content directory mixes comic images and text books: {}",
@@ -644,6 +766,7 @@ fn discover_units(
                     state::UnitKind::Author
                 }
             } else {
+                seen.insert(key.clone());
                 cached_kind.expect("cached kind checked above")
             };
             if library_kind
@@ -850,7 +973,7 @@ fn recommended_thumbnail_workers() -> usize {
         logical.min(physical)
     };
 
-    (baseline * 3 / 4).clamp(1, 12)
+    (baseline * 3 / 4).clamp(1, MAX_THUMBNAIL_WORKERS)
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -1598,7 +1721,8 @@ fn write_bytes_atomic(path: &Path, data: &[u8]) -> Result<()> {
         fs::create_dir_all(parent)
             .with_context(|| format!("create directory: {}", parent.display()))?;
     }
-    let tmp = path.with_extension(format!("json.{}.tmp", std::process::id()));
+    let seq = JSON_TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let tmp = path.with_extension(format!("json.{}.{seq}.tmp", std::process::id()));
     fs::write(&tmp, data).with_context(|| format!("write temporary file: {}", tmp.display()))?;
     fs::rename(&tmp, path).with_context(|| format!("write file: {}", path.display()))?;
     Ok(())
@@ -1868,6 +1992,32 @@ mod tests {
         }
     }
 
+    #[test]
+    fn build_lock_rejects_an_active_owner() {
+        let temp = TestDir::new();
+        let lock = acquire_build_lock(&temp.0).unwrap();
+
+        let error = acquire_build_lock(&temp.0).unwrap_err().to_string();
+
+        assert!(error.contains("build already running"));
+        drop(lock);
+        assert!(!temp.0.join(BUILD_LOCK_FILE).exists());
+    }
+
+    #[test]
+    fn build_lock_removes_a_stale_owner() {
+        let temp = TestDir::new();
+        let lock_path = temp.0.join(BUILD_LOCK_FILE);
+        fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
+        fs::write(&lock_path, u32::MAX.to_string()).unwrap();
+
+        let lock = acquire_build_lock(&temp.0).unwrap();
+
+        assert_eq!(read_lock_pid(&lock_path).unwrap(), Some(std::process::id()));
+        drop(lock);
+        assert!(!lock_path.exists());
+    }
+
     fn test_build_args(source: &Path) -> BuildArgs {
         BuildArgs {
             source: source.to_path_buf(),
@@ -1957,6 +2107,42 @@ mod tests {
     }
 
     #[test]
+    fn failed_full_scan_discovery_preserves_previous_event_cursor() {
+        let temp = TestDir::new();
+        let source = &temp.0;
+        let mut database = state::StateDb::open(source).unwrap();
+        database.set_event_cursor(123).unwrap();
+        drop(database);
+        write_test_image(&source.join("001.png"), [255, 0, 0]);
+
+        let error = build(test_build_args(source)).unwrap_err().to_string();
+
+        assert!(error.contains("resource root contains content files directly"));
+        let database = state::StateDb::open(source).unwrap();
+        assert_eq!(database.event_cursor().unwrap(), Some(123));
+    }
+
+    #[test]
+    fn failed_full_scan_build_preserves_previous_full_scan_timestamp() {
+        let temp = TestDir::new();
+        let source = &temp.0;
+        let mut database = state::StateDb::open(source).unwrap();
+        database.record_full_scan(123).unwrap();
+        drop(database);
+        let good_page = source.join("Comics/One/001.png");
+        let bad_page = source.join("Comics/Two/001.png");
+        write_test_image(&good_page, [255, 0, 0]);
+        fs::create_dir_all(bad_page.parent().unwrap()).unwrap();
+        fs::write(&bad_page, "invalid image").unwrap();
+
+        let error = build(test_build_args(source)).unwrap_err().to_string();
+
+        assert!(error.contains("decode image"));
+        let database = state::StateDb::open(source).unwrap();
+        assert_eq!(database.last_full_scan_ms().unwrap(), Some(123));
+    }
+
+    #[test]
     fn empty_content_directories_are_skipped() {
         let temp = TestDir::new();
         fs::create_dir_all(temp.0.join("Novel/AUTO")).unwrap();
@@ -1971,6 +2157,28 @@ mod tests {
         let authors = manifest["libraries"][0]["authors"].as_array().unwrap();
         assert_eq!(authors.len(), 1);
         assert_eq!(authors[0]["name"], "Author");
+    }
+
+    #[test]
+    fn empty_cached_content_directory_is_removed_from_state_and_outputs() {
+        let temp = TestDir::new();
+        let source = &temp.0;
+        let page = source.join("Comics/One/001.png");
+        write_test_image(&page, [255, 0, 0]);
+        build_test_library(source);
+        assert!(source.join("manifests/Comics/One.json").is_file());
+        assert!(source.join("thumbnail/Comics/One/001.webp").is_file());
+
+        fs::remove_file(&page).unwrap();
+        build_test_library(source);
+
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(source.join(MANIFEST_FILE)).unwrap()).unwrap();
+        assert!(manifest["libraries"].as_array().unwrap().is_empty());
+        let database = state::StateDb::open(source).unwrap();
+        assert!(database.load_units().unwrap().is_empty());
+        assert!(!source.join("manifests/Comics/One.json").exists());
+        assert!(!source.join("thumbnail/Comics/One/001.webp").exists());
     }
 
     #[cfg(target_os = "macos")]

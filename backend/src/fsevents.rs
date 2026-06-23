@@ -169,6 +169,15 @@ mod tests {
     }
 
     #[test]
+    fn ignores_local_runtime_state() {
+        let root = Path::new("/library");
+        let mut batch = ChangeBatch::default();
+        record_path_change(root, Path::new("/library/.megumi/build.lock"), &mut batch);
+        assert!(batch.unit_keys.is_empty());
+        assert!(!batch.requires_full_scan);
+    }
+
+    #[test]
     fn library_level_changes_require_full_scan() {
         let root = Path::new("/library");
         let mut batch = ChangeBatch::default();

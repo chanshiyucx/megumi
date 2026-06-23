@@ -11,6 +11,7 @@ COMMON_FLAGS=(
   --exclude ".megumi/tags.json"
   --exclude ".megumi/state.json"
   --exclude ".megumi/state.sqlite3*"
+  --exclude ".megumi/build.lock"
   --exclude ".DS_Store"
   --log-file="$LOG"
   --log-level INFO

@@ -95,7 +95,8 @@ function assetUrl(
   manifestUrl: string,
   key: string,
 ) {
-  return new URL(key, manifestUrl).toString()
+  const encodedKey = key.split('/').map(encodeURIComponent).join('/')
+  return new URL(encodedKey, manifestUrl).toString()
 }
 
 function versionedAssetUrl(

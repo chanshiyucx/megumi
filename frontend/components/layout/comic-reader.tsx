@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/button'
 import { ComicStrip, type ComicStripHandle } from '@/components/ui/comic-strip'
 import { GridImage, ImagePreviewOverlay } from '@/components/ui/image-view'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import { Spinner } from '@/components/ui/spinner'
 import { useClickOutside } from '@/hooks/use-click-outside'
 import { useComicReadingSession } from '@/hooks/use-comic-reading-session'
 import { useIsPhone } from '@/hooks/use-is-phone'
@@ -18,7 +19,7 @@ import { cn } from '@/lib/style'
 import { useLibraryStore } from '@/store/library'
 import { useTabsStore } from '@/store/tabs'
 import { useUIStore } from '@/store/ui'
-import type { FileTags, Image } from '@/types/library'
+import type { ComicImageStatus, FileTags, Image } from '@/types/library'
 
 interface TableOfContentsProps {
   comicId: string
@@ -74,17 +75,22 @@ function TableOfContents({
       {renderImages && (
         <ScrollArea ref={scrollRef} orientation="horizontal" className="flex">
           {images.map((img) => (
-            <GridImage
+            <div
               key={img.filename}
+              data-index={img.index}
               className="w-[100px]"
-              comicId={comicId}
-              image={img}
-              isSelected={currentIndex === img.index}
-              onClick={() => {
-                onSelect(img.index)
-              }}
-              onTags={onTags}
-            />
+            >
+              <GridImage
+                className="w-full"
+                comicId={comicId}
+                image={img}
+                isSelected={currentIndex === img.index}
+                onClick={() => {
+                  onSelect(img.index)
+                }}
+                onTags={onTags}
+              />
+            </div>
           ))}
         </ScrollArea>
       )}
@@ -94,6 +100,22 @@ function TableOfContents({
 
 interface ComicReaderProps {
   comicId: string
+}
+
+function ComicReaderStatus({ status }: { status: ComicImageStatus }) {
+  const isLoading = status === 'idle' || status === 'loading'
+
+  return (
+    <div className="text-subtle flex h-0 flex-1 flex-col items-center justify-center gap-3">
+      {isLoading ? (
+        <Spinner size="large" />
+      ) : (
+        <span className="text-xs">
+          {status === 'failed' ? '加载失败' : '暂无图片'}
+        </span>
+      )}
+    </div>
+  )
 }
 
 export function ComicReader({ comicId }: ComicReaderProps) {
@@ -108,6 +130,7 @@ export function ComicReader({ comicId }: ComicReaderProps) {
   const {
     comic,
     images,
+    comicImageStatus,
     currentIndex,
     previewIndex,
     setPreviewIndex,
@@ -176,7 +199,26 @@ export function ComicReader({ comicId }: ComicReaderProps) {
     }
   }, [])
 
-  if (!comic || !images.length) return null
+  if (!comic) return null
+
+  if (!images.length) {
+    return (
+      <div className="bg-surface flex h-full w-full flex-col overflow-hidden">
+        <div
+          className={cn(
+            'bg-base text-subtle grid h-8 w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-2 overflow-hidden border-b px-3 text-xs',
+            isImmersive && 'hidden',
+          )}
+        >
+          <h3 className="min-w-0 truncate text-left" title={comic.title}>
+            {comic.title}
+          </h3>
+        </div>
+
+        <ComicReaderStatus status={comicImageStatus} />
+      </div>
+    )
+  }
 
   return (
     <div className="relative flex h-full w-full flex-col overflow-hidden">
@@ -266,6 +308,7 @@ export function ComicReader({ comicId }: ComicReaderProps) {
       <ImagePreviewOverlay
         comicId={comicId}
         images={images}
+        active={activeTab === comicId}
         index={previewIndex}
         onIndexChange={setPreviewIndex}
         onClose={handlePreviewClose}

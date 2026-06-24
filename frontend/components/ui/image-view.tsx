@@ -264,7 +264,8 @@ function ImagePreview({
 interface ImagePreviewOverlayProps {
   comicId: string
   images: Image[]
-  // Index of the previewed page; < 0 keeps the overlay hidden (but mounted).
+  active: boolean
+  // Index of the previewed page; < 0 keeps the overlay closed.
   index: number
   onIndexChange: (index: number) => void
   // Double-tap / double-click anywhere closes the overlay.
@@ -275,19 +276,21 @@ interface ImagePreviewOverlayProps {
 export function ImagePreviewOverlay({
   comicId,
   images,
+  active,
   index,
   onIndexChange,
   onClose,
   onTags,
 }: ImagePreviewOverlayProps) {
+  const isVisible = active && index >= 0 && Boolean(images[index])
+
+  if (!isVisible) return null
+
   return (
     <div
       role="dialog"
       aria-label="图片预览"
-      className={cn(
-        'bg-base fixed inset-0 z-100 flex items-center justify-center',
-        index >= 0 ? 'visible' : 'hidden',
-      )}
+      className="bg-base fixed inset-0 z-100 flex items-center justify-center"
     >
       <ImagePreview
         comicId={comicId}

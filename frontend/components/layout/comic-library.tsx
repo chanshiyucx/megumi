@@ -304,6 +304,7 @@ export function ComicLibrary({ selectedLibrary }: ComicLibraryProps) {
       <ImagePreviewOverlay
         comicId={comicId}
         images={images}
+        active={!activeTab && readerVisible}
         index={previewIndex}
         onIndexChange={setPreviewIndex}
         onClose={handlePreviewClose}

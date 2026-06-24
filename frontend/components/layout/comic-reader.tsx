@@ -1,5 +1,11 @@
 import { SquareMenu, Star, Trash2 } from 'lucide-react'
-import { useEffect, useEffectEvent, useRef, useState } from 'react'
+import {
+  useEffect,
+  useEffectEvent,
+  useRef,
+  useState,
+  type TransitionEvent,
+} from 'react'
 import { Button } from '@/components/ui/button'
 import { ComicStrip, type ComicStripHandle } from '@/components/ui/comic-strip'
 import { GridImage, ImagePreviewOverlay } from '@/components/ui/image-view'
@@ -19,9 +25,11 @@ interface TableOfContentsProps {
   images: Image[]
   currentIndex: number
   isCollapsed: boolean
+  renderImages: boolean
   onSelect: (index: number) => void
   onTags: (id: string, imageKey: string, tags: FileTags) => Promise<void>
   onClose: () => void
+  onTransitionEnd: (e: TransitionEvent<HTMLDivElement>) => void
 }
 
 function TableOfContents({
@@ -29,9 +37,11 @@ function TableOfContents({
   images,
   currentIndex,
   isCollapsed,
+  renderImages,
   onSelect,
   onTags,
   onClose,
+  onTransitionEnd,
 }: TableOfContentsProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const tocRef = useRef<HTMLDivElement>(null)
@@ -59,22 +69,25 @@ function TableOfContents({
           ? 'translate-y-full opacity-0'
           : 'translate-y-0 opacity-100',
       )}
+      onTransitionEnd={onTransitionEnd}
     >
-      <ScrollArea ref={scrollRef} orientation="horizontal" className="flex">
-        {images.map((img) => (
-          <GridImage
-            key={img.filename}
-            className="w-[100px]"
-            comicId={comicId}
-            image={img}
-            isSelected={currentIndex === img.index}
-            onClick={() => {
-              onSelect(img.index)
-            }}
-            onTags={onTags}
-          />
-        ))}
-      </ScrollArea>
+      {renderImages && (
+        <ScrollArea ref={scrollRef} orientation="horizontal" className="flex">
+          {images.map((img) => (
+            <GridImage
+              key={img.filename}
+              className="w-[100px]"
+              comicId={comicId}
+              image={img}
+              isSelected={currentIndex === img.index}
+              onClick={() => {
+                onSelect(img.index)
+              }}
+              onTags={onTags}
+            />
+          ))}
+        </ScrollArea>
+      )}
     </div>
   )
 }
@@ -86,6 +99,7 @@ interface ComicReaderProps {
 export function ComicReader({ comicId }: ComicReaderProps) {
   const stripRef = useRef<ComicStripHandle>(null)
   const [isTocCollapsed, setTocCollapsed] = useState(true)
+  const [renderTocImages, setRenderTocImages] = useState(false)
   const isImmersive = useUIStore((s) => s.isImmersive)
   const isPhone = useIsPhone()
   const activeTab = useTabsStore((s) => s.activeTab)
@@ -111,16 +125,18 @@ export function ComicReader({ comicId }: ComicReaderProps) {
     tagTargetPolicy: 'reader',
   })
 
-  const handleStripIndexChange = (index: number) => {
-    trackStripIndex(index)
-  }
-
   const handleCloseToc = () => {
     setTocCollapsed(true)
   }
 
   const toggleToc = () => {
+    if (isTocCollapsed) setRenderTocImages(true)
     setTocCollapsed((prev) => !prev)
+  }
+
+  const handleTocTransitionEnd = (e: TransitionEvent<HTMLDivElement>) => {
+    if (e.target !== e.currentTarget) return
+    if (isTocCollapsed) setRenderTocImages(false)
   }
 
   // Closing the preview syncs the scroll position to whatever page the user
@@ -169,11 +185,13 @@ export function ComicReader({ comicId }: ComicReaderProps) {
         images={images}
         currentIndex={currentIndex}
         isCollapsed={isTocCollapsed}
+        renderImages={renderTocImages}
         onSelect={(index) => {
           jumpTo(index)
         }}
         onTags={updateComicImageTags}
         onClose={handleCloseToc}
+        onTransitionEnd={handleTocTransitionEnd}
       />
       <div
         className={cn(
@@ -238,7 +256,7 @@ export function ComicReader({ comicId }: ComicReaderProps) {
           images={images}
           initialIndex={currentIndex}
           orientation={isPhone ? 'vertical' : 'horizontal'}
-          onCurrentIndexChange={handleStripIndexChange}
+          onCurrentIndexChange={trackStripIndex}
           onHover={setHoveredIndex}
           onDoubleClick={setPreviewIndex}
           onTags={updateComicImageTags}

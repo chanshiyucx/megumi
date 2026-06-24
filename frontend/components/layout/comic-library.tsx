@@ -26,7 +26,6 @@ interface ComicItemProps {
   comic: Comic
   isSelected: boolean
   onClick: (id: string) => void
-  onDoubleClick?: (id: string) => void
   onTags: (id: string, tags: FileTags) => Promise<void>
 }
 
@@ -34,7 +33,6 @@ function ComicItem({
   comic,
   isSelected,
   onClick,
-  onDoubleClick,
   onTags,
 }: ComicItemProps) {
   const progress = useProgressStore((s) => s.comics[comic.id])
@@ -52,7 +50,6 @@ function ComicItem({
       onClick={() => {
         onClick(comic.id)
       }}
-      onDoubleClick={() => onDoubleClick?.(comic.id)}
       onStar={() => void onTags(comic.id, { starred: !comic.starred })}
       onDelete={() => void onTags(comic.id, { deleted: !comic.deleted })}
     />
@@ -95,6 +92,7 @@ export function ComicLibrary({ selectedLibrary }: ComicLibraryProps) {
   const {
     comic,
     images,
+    comicImageStatus,
     currentIndex,
     previewIndex,
     setPreviewIndex,
@@ -133,15 +131,19 @@ export function ComicLibrary({ selectedLibrary }: ComicLibraryProps) {
     openReader()
   }
 
-  const handleStripIndexChange = (index: number) => {
-    trackStripIndex(index)
-  }
-
   // Closing the preview syncs the reading position to the page the user flipped
   // to, scrolling the strip there when scroll mode is showing.
   const handlePreviewClose = () => {
     closePreview()
   }
+
+  const pageStatusText = (() => {
+    if (!comic) return ''
+    if (images.length) return `${currentIndex + 1} / ${images.length}`
+    if (comicImageStatus === 'failed') return '加载失败'
+    if (comicImageStatus === 'empty') return '暂无图片'
+    return '加载中'
+  })()
 
   const handleKeyDown = useEffectEvent((e: KeyboardEvent) => {
     if (e.metaKey || e.ctrlKey || e.altKey) return
@@ -269,9 +271,7 @@ export function ComicLibrary({ selectedLibrary }: ComicLibraryProps) {
             {comic?.title}
           </h3>
 
-          <span className="shrink-0 whitespace-nowrap">
-            {currentIndex + 1} / {images.length}
-          </span>
+          <span className="shrink-0 whitespace-nowrap">{pageStatusText}</span>
         </div>
         {viewMode === 'grid' ? (
           <div aria-label="图片列表" className="contents">
@@ -293,7 +293,7 @@ export function ComicLibrary({ selectedLibrary }: ComicLibraryProps) {
             images={images}
             initialIndex={currentIndex}
             orientation="vertical"
-            onCurrentIndexChange={handleStripIndexChange}
+            onCurrentIndexChange={trackStripIndex}
             onHover={setHoveredIndex}
             onDoubleClick={setPreviewIndex}
             onTags={updateComicImageTags}

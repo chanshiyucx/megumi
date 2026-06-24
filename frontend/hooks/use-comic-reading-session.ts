@@ -36,11 +36,11 @@ function resolveTagTargetImage(
   hoveredIndex: number | null,
   currentIndex: number,
 ) {
-  if (policy === 'reader' && previewIndex >= 0) {
+  if (previewIndex >= 0) {
     return images[previewIndex]
   }
   if (policy === 'library-grid') {
-    return images[previewIndex]
+    return undefined
   }
   return images[hoveredIndex ?? currentIndex]
 }
@@ -183,6 +183,7 @@ export function useComicReadingSession({
   return {
     comic,
     images,
+    comicImageStatus,
     currentIndex,
     previewIndex,
     setPreviewIndex,

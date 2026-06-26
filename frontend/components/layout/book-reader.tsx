@@ -1,28 +1,13 @@
 import { SquareMenu, Star, StepForward, Trash2 } from 'lucide-react'
-import {
-  useEffect,
-  useEffectEvent,
-  useLayoutEffect,
-  useRef,
-  useState,
-} from 'react'
-import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
+import { useRef } from 'react'
+import { Virtuoso } from 'react-virtuoso'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Spinner } from '@/components/ui/spinner'
+import { useBookReadingSession } from '@/hooks/use-book-reading-session'
 import { useClickOutside } from '@/hooks/use-click-outside'
-import { useScrollLock } from '@/hooks/use-scroll-lock'
-import { useThrottledProgress } from '@/hooks/use-throttled-progress'
-import { createBookProgress } from '@/lib/progress'
-import { parseBook } from '@/lib/scanner'
-import { SHORTCUTS } from '@/lib/shortcuts'
 import { cn } from '@/lib/style'
-import { useLibraryStore } from '@/store/library'
-import { useProgressStore } from '@/store/progress'
-import { useTabsStore } from '@/store/tabs'
-import { LibraryType, type BookContent, type Chapter } from '@/types/library'
-
-const EMPTY_LINES: string[] = []
+import type { Chapter } from '@/types/library'
 
 const ReaderPadding = {
   Header: () => <div className="h-16" />,
@@ -115,170 +100,32 @@ function TableOfContents({
   )
 }
 
-interface BookData {
-  bookId: string
-  content: BookContent
-}
-
 interface BookReaderProps {
   bookId: string
   showReading?: boolean
 }
 
 export function BookReader({ bookId, showReading = false }: BookReaderProps) {
-  const virtuosoRef = useRef<VirtuosoHandle>(null)
-  const [isTocCollapsed, setTocCollapsed] = useState(true)
-  const [bookData, setBookData] = useState<BookData | null>(null)
-  const [isLoading, setIsLoading] = useState(false)
-  const [loadProgress, setLoadProgress] = useState(0)
-
-  const book = useLibraryStore((s) => s.books[bookId])
-  const updateBookTags = useLibraryStore((s) => s.updateBookTags)
-  const updateBookChapterTags = useLibraryStore(
-    (s) => s.updateBookChapterTags,
-  )
-  const getBookChapters = useLibraryStore((s) => s.getBookChapters)
-  const bookRefreshToken = useLibraryStore(
-    (s) => s.bookRefreshTokens[bookId] ?? 0,
-  )
-  const activeTab = useTabsStore((s) => s.activeTab)
-  const addTab = useTabsStore((s) => s.addTab)
-  const setActiveTab = useTabsStore((s) => s.setActiveTab)
-
-  const content = bookData?.bookId === bookId ? bookData.content : null
-  const lines = content?.lines ?? EMPTY_LINES
-
-  const updateBookProgress = useProgressStore((s) => s.updateBookProgress)
-  const progress = useProgressStore((s) => s.books[bookId])
-  const currentIndex = progress?.current ?? 0
-  const currentChapterTitle = progress?.currentChapterTitle ?? ''
-
-  const { isLock, lockScroll } = useScrollLock()
-  const throttledUpdateProgress = useThrottledProgress(updateBookProgress)
-  const refreshTokenRef = useRef({ bookId, token: bookRefreshToken })
-
-  const jumpTo = (targetIndex?: number) => {
-    if (!content) return
-
-    const index = targetIndex ?? currentIndex
-    const newProgress = createBookProgress(
-      index,
-      content.lines.length,
-      content.chapters,
-    )
-    updateBookProgress(book.id, newProgress)
-
-    lockScroll()
-    virtuosoRef.current?.scrollToIndex({
-      index,
-      align: 'start',
-    })
-  }
-  const jumpToFn = useEffectEvent(jumpTo)
-
-  useEffect(() => {
-    if (!book?.path) return
-
-    const previousRefresh = refreshTokenRef.current
-    const force =
-      previousRefresh.bookId === bookId &&
-      bookRefreshToken > previousRefresh.token
-    refreshTokenRef.current = { bookId, token: bookRefreshToken }
-
-    let cancelled = false
-    const load = async () => {
-      setIsLoading(true)
-      setLoadProgress(0)
-      try {
-        const [data, chapters] = await Promise.all([
-          parseBook(
-            book.path,
-            (percent) => {
-              if (!cancelled) setLoadProgress(percent)
-            },
-          ),
-          getBookChapters(bookId, { force }),
-        ])
-        data.chapters = chapters
-        if (!cancelled) setBookData({ bookId, content: data })
-      } catch (e) {
-        console.error('Failed to load book', e)
-      } finally {
-        if (!cancelled) setIsLoading(false)
-      }
-    }
-    void load()
-    return () => {
-      cancelled = true
-    }
-  }, [bookId, book?.path, bookRefreshToken, getBookChapters])
-
-  useLayoutEffect(() => {
-    lockScroll()
-  }, [lockScroll, bookId])
-
-  useLayoutEffect(() => {
-    jumpToFn()
-  }, [activeTab])
-
-  const handleRangeChanged = (range: {
-    startIndex: number
-    endIndex: number
-  }) => {
-    if (isLock.current) return
-
-    if (!content) return
-
-    const newProgress = createBookProgress(
-      range.startIndex,
-      content.lines.length,
-      content.chapters,
-    )
-    throttledUpdateProgress.current(book.id, newProgress)
-  }
-
-  const toggleToc = () => {
-    if (!content?.chapters.length) return
-    setTocCollapsed((prev) => !prev)
-  }
-
-  const handleContinueReading = () => {
-    if (!book || activeTab === book.id) return
-    addTab({
-      type: LibraryType.book,
-      id: book.id,
-      title: book.title,
-    })
-    setActiveTab(book.id)
-  }
-
-  const handleKeyDown = useEffectEvent((e: KeyboardEvent) => {
-    if (e.metaKey || e.ctrlKey || e.altKey) return
-    if (!book) return
-    if (activeTab && activeTab !== book.id) return
-
-    switch (e.code) {
-      case SHORTCUTS.toggleToc:
-        toggleToc()
-        break
-      case SHORTCUTS.toggleItemDeleted:
-        void updateBookTags(book.id, { deleted: !book.deleted })
-        break
-      case SHORTCUTS.toggleItemStarred:
-        void updateBookTags(book.id, { starred: !book.starred })
-        break
-      case SHORTCUTS.continueReading:
-        handleContinueReading()
-        break
-    }
-  })
-
-  useEffect(() => {
-    window.addEventListener('keydown', handleKeyDown)
-    return () => {
-      window.removeEventListener('keydown', handleKeyDown)
-    }
-  }, [])
+  const {
+    book,
+    content,
+    lines,
+    progress,
+    currentIndex,
+    currentChapterTitle,
+    isLoading,
+    loadProgress,
+    isTocCollapsed,
+    virtuosoRef,
+    closeToc,
+    toggleToc,
+    jumpTo,
+    trackRange,
+    continueReading,
+    toggleBookDeleted,
+    toggleBookStarred,
+    toggleChapterStarred,
+  } = useBookReadingSession({ bookId })
 
   const renderItem = (_index: number, line: string) => <BookLine line={line} />
 
@@ -307,14 +154,8 @@ export function BookReader({ bookId, showReading = false }: BookReaderProps) {
           currentChapterTitle={currentChapterTitle}
           isCollapsed={isTocCollapsed}
           onSelect={jumpTo}
-          onToggleFavorite={(chapter) => {
-            void updateBookChapterTags(bookId, chapter.lineIndex, {
-              starred: !chapter.starred,
-            })
-          }}
-          onClose={() => {
-            setTocCollapsed(true)
-          }}
+          onToggleFavorite={toggleChapterStarred}
+          onClose={closeToc}
         />
       )}
 
@@ -335,7 +176,7 @@ export function BookReader({ bookId, showReading = false }: BookReaderProps) {
           {showReading && (
             <Button
               className="h-6 w-6"
-              onClick={handleContinueReading}
+              onClick={continueReading}
               title="继续阅读"
             >
               <StepForward className="h-4 w-4" />
@@ -344,9 +185,7 @@ export function BookReader({ bookId, showReading = false }: BookReaderProps) {
 
           <Button
             className="h-6 w-6"
-            onClick={() =>
-              void updateBookTags(book.id, { deleted: !book.deleted })
-            }
+            onClick={toggleBookDeleted}
             title="标记删除"
           >
             <Trash2
@@ -356,9 +195,7 @@ export function BookReader({ bookId, showReading = false }: BookReaderProps) {
 
           <Button
             className="h-6 w-6"
-            onClick={() =>
-              void updateBookTags(book.id, { starred: !book.starred })
-            }
+            onClick={toggleBookStarred}
             title="标记收藏"
           >
             <Star
@@ -396,7 +233,7 @@ export function BookReader({ bookId, showReading = false }: BookReaderProps) {
         className="flex-1"
         data={lines}
         initialTopMostItemIndex={currentIndex}
-        rangeChanged={handleRangeChanged}
+        rangeChanged={trackRange}
         itemContent={renderItem}
         components={ReaderPadding}
         increaseViewportBy={{ top: 0, bottom: 200 }}

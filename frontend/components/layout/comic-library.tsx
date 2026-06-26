@@ -1,5 +1,5 @@
 import { Grid2x2, Rows2, Star, StepForward, Trash2 } from 'lucide-react'
-import { useEffect, useEffectEvent, useRef } from 'react'
+import { useRef } from 'react'
 import { VirtuosoGrid } from 'react-virtuoso'
 import { useShallow } from 'zustand/react/shallow'
 import { Button } from '@/components/ui/button'
@@ -8,19 +8,12 @@ import { GridItem } from '@/components/ui/grid-item'
 import { GridImage, ImagePreviewOverlay } from '@/components/ui/image-view'
 import { useComicReadingSession } from '@/hooks/use-comic-reading-session'
 import { usePanelNav } from '@/hooks/use-panel-nav'
-import { SHORTCUTS } from '@/lib/shortcuts'
+import { selectOrderedComicsForLibrary } from '@/lib/library-queries'
 import { cn } from '@/lib/style'
 import { useLibraryStore } from '@/store/library'
 import { useProgressStore } from '@/store/progress'
-import { useTabsStore } from '@/store/tabs'
 import { useUIStore } from '@/store/ui'
-import {
-  LibraryType,
-  type Comic,
-  type FileTags,
-  type Image,
-  type Library,
-} from '@/types/library'
+import type { Comic, FileTags, Image, Library } from '@/types/library'
 
 interface ComicItemProps {
   comic: Comic
@@ -64,10 +57,6 @@ export function ComicLibrary({ selectedLibrary }: ComicLibraryProps) {
   const stripRef = useRef<ComicStripHandle>(null)
   const { readerVisible, middleClass, readerClass, openReader } = usePanelNav()
 
-  const activeTab = useTabsStore((s) => s.activeTab)
-  const addTab = useTabsStore((s) => s.addTab)
-  const setActiveTab = useTabsStore((s) => s.setActiveTab)
-
   const viewMode = useUIStore((s) => s.comicLibraryViewMode)
   const setViewMode = useUIStore((s) => s.setComicLibraryViewMode)
   const setNavStatus = useUIStore((s) => s.setNavStatus)
@@ -77,17 +66,12 @@ export function ComicLibrary({ selectedLibrary }: ComicLibraryProps) {
     (s) => s.navStatus[selectedLibrary.id]?.comicId ?? '',
   )
   const comics = useLibraryStore(
-    useShallow((s) => {
-      const comicIds = s.libraryComics[selectedLibrary.id] ?? []
-      return comicIds
-        .map((id) => s.comics[id])
-        .toSorted((a, b) => {
-          if (a.deleted !== b.deleted) return a.deleted ? 1 : -1
-          if (a.starred !== b.starred) return a.starred ? -1 : 1
-          return 0
-        })
-    }),
+    useShallow((s) => selectOrderedComicsForLibrary(s, selectedLibrary.id)),
   )
+
+  const toggleViewMode = () => {
+    setViewMode(viewMode === 'grid' ? 'scroll' : 'grid')
+  }
 
   const {
     comic,
@@ -96,33 +80,24 @@ export function ComicLibrary({ selectedLibrary }: ComicLibraryProps) {
     currentIndex,
     previewIndex,
     setPreviewIndex,
+    previewActive,
     trackStripIndex,
     setHoveredIndex,
     closePreview,
+    continueReading,
+    toggleComicDeleted,
+    toggleComicStarred,
     updateComicImageTags,
-    toggleTargetImageDeleted,
-    toggleTargetImageStarred,
   } = useComicReadingSession({
     comicId,
     stripRef,
-    stripVisible: readerVisible && viewMode === 'scroll',
-    tagTargetPolicy: viewMode === 'grid' ? 'library-grid' : 'library-scroll',
+    surface: {
+      kind: 'library',
+      readerVisible,
+      viewMode,
+      onToggleViewMode: toggleViewMode,
+    },
   })
-
-  const toggleViewMode = () => {
-    setViewMode(viewMode === 'grid' ? 'scroll' : 'grid')
-  }
-
-  const handleContinueReading = () => {
-    if (!comic) return
-
-    addTab({
-      type: LibraryType.comic,
-      id: comic.id,
-      title: comic.title,
-    })
-    setActiveTab(comic.id)
-  }
 
   const handleSelectComic = (id: string) => {
     if (id !== comic?.id) {
@@ -144,40 +119,6 @@ export function ComicLibrary({ selectedLibrary }: ComicLibraryProps) {
     if (comicImageStatus === 'empty') return '暂无图片'
     return '加载中'
   })()
-
-  const handleKeyDown = useEffectEvent((e: KeyboardEvent) => {
-    if (e.metaKey || e.ctrlKey || e.altKey) return
-    if (!comic) return
-    if (activeTab) return
-
-    switch (e.code) {
-      case SHORTCUTS.continueReading:
-        handleContinueReading()
-        break
-      case SHORTCUTS.toggleViewMode:
-        toggleViewMode()
-        break
-      case SHORTCUTS.toggleItemDeleted:
-        void updateComicTags(comic.id, { deleted: !comic.deleted })
-        break
-      case SHORTCUTS.toggleItemStarred:
-        void updateComicTags(comic.id, { starred: !comic.starred })
-        break
-      case SHORTCUTS.toggleImageDeleted:
-        toggleTargetImageDeleted()
-        break
-      case SHORTCUTS.toggleImageStarred:
-        toggleTargetImageStarred()
-        break
-    }
-  })
-
-  useEffect(() => {
-    window.addEventListener('keydown', handleKeyDown)
-    return () => {
-      window.removeEventListener('keydown', handleKeyDown)
-    }
-  }, [])
 
   const renderComicItem = (_index: number, comic: Comic) => (
     <ComicItem
@@ -231,7 +172,7 @@ export function ComicLibrary({ selectedLibrary }: ComicLibraryProps) {
             </Button>
             <Button
               className="h-6 w-6"
-              onClick={handleContinueReading}
+              onClick={continueReading}
               title="继续阅读"
             >
               <StepForward className="h-4 w-4" />
@@ -240,9 +181,7 @@ export function ComicLibrary({ selectedLibrary }: ComicLibraryProps) {
               <>
                 <Button
                   className="h-6 w-6"
-                  onClick={() =>
-                    void updateComicTags(comic.id, { deleted: !comic.deleted })
-                  }
+                  onClick={toggleComicDeleted}
                   title="标记删除"
                 >
                   <Trash2
@@ -251,9 +190,7 @@ export function ComicLibrary({ selectedLibrary }: ComicLibraryProps) {
                 </Button>
                 <Button
                   className="h-6 w-6"
-                  onClick={() =>
-                    void updateComicTags(comic.id, { starred: !comic.starred })
-                  }
+                  onClick={toggleComicStarred}
                   title="标记收藏"
                 >
                   <Star
@@ -304,7 +241,7 @@ export function ComicLibrary({ selectedLibrary }: ComicLibraryProps) {
       <ImagePreviewOverlay
         comicId={comicId}
         images={images}
-        active={!activeTab && readerVisible}
+        active={previewActive}
         index={previewIndex}
         onIndexChange={setPreviewIndex}
         onClose={handlePreviewClose}

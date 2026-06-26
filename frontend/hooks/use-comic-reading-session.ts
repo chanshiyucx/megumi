@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useEffectEvent,
   useLayoutEffect,
   useRef,
   useState,
@@ -8,9 +9,17 @@ import {
 import type { ComicStripHandle } from '@/components/ui/comic-strip'
 import { useThrottledProgress } from '@/hooks/use-throttled-progress'
 import { createComicProgress } from '@/lib/progress'
+import { SHORTCUTS } from '@/lib/shortcuts'
 import { useLibraryStore } from '@/store/library'
 import { useProgressStore } from '@/store/progress'
-import type { ComicImageStatus, FileTags, Image } from '@/types/library'
+import { useTabsStore } from '@/store/tabs'
+import type { ComicLibraryViewMode } from '@/store/ui'
+import {
+  LibraryType,
+  type ComicImageStatus,
+  type FileTags,
+  type Image,
+} from '@/types/library'
 
 const EMPTY_ARRAY: Image[] = []
 
@@ -18,11 +27,22 @@ type StripRef = RefObject<ComicStripHandle | null>
 
 type ComicTagTargetPolicy = 'reader' | 'library-grid' | 'library-scroll'
 
+type ComicReadingSurface =
+  | {
+      kind: 'reader'
+    }
+  | {
+      kind: 'library'
+      readerVisible: boolean
+      viewMode: ComicLibraryViewMode
+      onToggleViewMode: () => void
+    }
+
 interface UseComicReadingSessionOptions {
   comicId: string
   stripRef: StripRef
-  stripVisible: boolean
-  tagTargetPolicy: ComicTagTargetPolicy
+  surface: ComicReadingSurface
+  onToggleToc?: () => void
 }
 
 function clampIndex(index: number, total: number) {
@@ -48,19 +68,35 @@ function resolveTagTargetImage(
 export function useComicReadingSession({
   comicId,
   stripRef,
-  stripVisible,
-  tagTargetPolicy,
+  surface,
+  onToggleToc,
 }: UseComicReadingSessionOptions) {
   const comic = useLibraryStore((s) => s.comics[comicId])
   const comicImages = useLibraryStore((s) => s.comicImages[comicId])
   const images = comicImages?.images ?? EMPTY_ARRAY
   const comicImageStatus: ComicImageStatus = comicImages?.status ?? 'idle'
   const getComicImages = useLibraryStore((s) => s.getComicImages)
+  const updateComicTags = useLibraryStore((s) => s.updateComicTags)
   const updateComicImageTags = useLibraryStore((s) => s.updateComicImageTags)
+  const activeTab = useTabsStore((s) => s.activeTab)
 
   const updateComicProgress = useProgressStore((s) => s.updateComicProgress)
   const progress = useProgressStore((s) => s.comics[comicId])
   const savedIndex = progress?.current ?? 0
+  const stripVisible =
+    surface.kind === 'reader'
+      ? activeTab === comicId
+      : surface.readerVisible && surface.viewMode === 'scroll'
+  const tagTargetPolicy: ComicTagTargetPolicy =
+    surface.kind === 'reader'
+      ? 'reader'
+      : surface.viewMode === 'grid'
+        ? 'library-grid'
+        : 'library-scroll'
+  const previewActive =
+    surface.kind === 'reader'
+      ? activeTab === comicId
+      : !activeTab && surface.readerVisible
 
   const [localPosition, setLocalPosition] = useState<{
     comicId: string
@@ -170,6 +206,25 @@ export function useComicReadingSession({
     updateTargetImageTags((image) => ({ starred: !image.starred }))
   }
 
+  const toggleComicDeleted = () => {
+    if (!comic) return
+    void updateComicTags(comic.id, { deleted: !comic.deleted })
+  }
+
+  const toggleComicStarred = () => {
+    if (!comic) return
+    void updateComicTags(comic.id, { starred: !comic.starred })
+  }
+
+  const continueReading = () => {
+    if (!comic || activeTab === comic.id) return
+    useTabsStore.getState().addTab({
+      type: LibraryType.comic,
+      id: comic.id,
+      title: comic.title,
+    })
+  }
+
   const closePreview = () => {
     if (previewIndex >= 0 && images.length) {
       const nextIndex = clampIndex(previewIndex, images.length)
@@ -180,6 +235,64 @@ export function useComicReadingSession({
     setPreviewIndex(-1)
   }
 
+  const handleKeyDown = useEffectEvent((e: KeyboardEvent) => {
+    if (e.metaKey || e.ctrlKey || e.altKey) return
+    if (!comic) return
+
+    if (surface.kind === 'reader') {
+      if (activeTab !== comic.id) return
+
+      switch (e.code) {
+        case SHORTCUTS.toggleToc:
+          onToggleToc?.()
+          break
+        case SHORTCUTS.toggleItemDeleted:
+          toggleComicDeleted()
+          break
+        case SHORTCUTS.toggleItemStarred:
+          toggleComicStarred()
+          break
+        case SHORTCUTS.toggleImageDeleted:
+          toggleTargetImageDeleted()
+          break
+        case SHORTCUTS.toggleImageStarred:
+          toggleTargetImageStarred()
+          break
+      }
+      return
+    }
+
+    if (activeTab) return
+
+    switch (e.code) {
+      case SHORTCUTS.continueReading:
+        continueReading()
+        break
+      case SHORTCUTS.toggleViewMode:
+        surface.onToggleViewMode()
+        break
+      case SHORTCUTS.toggleItemDeleted:
+        toggleComicDeleted()
+        break
+      case SHORTCUTS.toggleItemStarred:
+        toggleComicStarred()
+        break
+      case SHORTCUTS.toggleImageDeleted:
+        toggleTargetImageDeleted()
+        break
+      case SHORTCUTS.toggleImageStarred:
+        toggleTargetImageStarred()
+        break
+    }
+  })
+
+  useEffect(() => {
+    window.addEventListener('keydown', handleKeyDown)
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [])
+
   return {
     comic,
     images,
@@ -187,12 +300,14 @@ export function useComicReadingSession({
     currentIndex,
     previewIndex,
     setPreviewIndex,
+    previewActive,
     jumpTo,
     trackStripIndex,
     setHoveredIndex,
     closePreview,
+    continueReading,
+    toggleComicDeleted,
+    toggleComicStarred,
     updateComicImageTags,
-    toggleTargetImageDeleted,
-    toggleTargetImageStarred,
   }
 }

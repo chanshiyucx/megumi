@@ -8,7 +8,17 @@ import {
   type RemoteBookSource,
   type RemoteComicSource,
 } from '@/lib/manifest'
-import { chapterTagId, patchRemoteTags, type RemoteTags } from '@/lib/tags'
+import {
+  applyFileTags,
+  bookTagTarget,
+  chapterTagTarget,
+  comicTagTarget,
+  commitTagUpdate,
+  imageTagTarget,
+  readRemoteTags,
+  snapshotFileTags,
+} from '@/lib/tag-actions'
+import type { RemoteTags } from '@/lib/tags'
 import { useUIStore } from '@/store/ui'
 import { useTabsStore } from '@/store/tabs'
 import type {
@@ -86,14 +96,6 @@ interface LibraryState {
   ) => Promise<void>
 }
 
-function applyFileTags(
-  item: { starred: boolean; deleted: boolean },
-  tags: FileTags,
-) {
-  if (tags.starred !== undefined) item.starred = tags.starred
-  if (tags.deleted !== undefined) item.deleted = tags.deleted
-}
-
 function readStoredLibraryOrder() {
   if (typeof window === 'undefined') return []
 
@@ -150,7 +152,7 @@ function applyLibraryOrder(
 
 function applyRemoteImageTags(images: Image[], catalog: RemoteCatalog) {
   for (const image of images) {
-    const tags = catalog.tags.images[image.path] ?? {}
+    const tags = readRemoteTags(catalog.tags, imageTagTarget(image.path))
     image.starred = Boolean(tags.starred)
     image.deleted = Boolean(tags.deleted)
   }
@@ -158,30 +160,8 @@ function applyRemoteImageTags(images: Image[], catalog: RemoteCatalog) {
 
 function applyRemoteChapterTags(book: Book, catalog: RemoteCatalog) {
   for (const chapter of book.chapters) {
-    const tags =
-      catalog.tags.chapters[chapterTagId(book.title, chapter.title)] ?? {}
+    const tags = readRemoteTags(catalog.tags, chapterTagTarget(book, chapter))
     chapter.starred = Boolean(tags.starred)
-  }
-}
-
-function updateLatestTags(targetType: string, targetId: string, tags: FileTags) {
-  if (!latestTags) return
-
-  const bucket =
-    targetType === 'comic'
-      ? latestTags.comics
-      : targetType === 'book'
-        ? latestTags.books
-        : targetType === 'image'
-          ? latestTags.images
-          : targetType === 'chapter'
-            ? latestTags.chapters
-            : null
-
-  if (!bucket) return
-  bucket[targetId] = {
-    ...bucket[targetId],
-    ...tags,
   }
 }
 
@@ -450,88 +430,74 @@ export const useLibraryStore = create<LibraryState>()(
     updateBookTags: async (bookId, tags) => {
       const previous = get().books[bookId]
       if (!previous) return
-      const rollback = {
-        starred: previous.starred,
-        deleted: previous.deleted,
-      }
+      const rollback = snapshotFileTags(previous)
 
-      set((state) => {
-        const book = state.books[bookId]
-        if (book) applyFileTags(book, tags)
+      await commitTagUpdate({
+        target: bookTagTarget(previous),
+        tags,
+        latestTags,
+        apply: () =>
+          set((state) => {
+            const book = state.books[bookId]
+            if (book) applyFileTags(book, tags)
+          }),
+        rollback: () =>
+          set((state) => {
+            const book = state.books[bookId]
+            if (book) applyFileTags(book, rollback)
+          }),
+        errorMessage: `Failed to update book tags for ${bookId}:`,
       })
-
-      try {
-        await patchRemoteTags({
-          targetType: 'book',
-          targetId: previous.title,
-          tags,
-        })
-        updateLatestTags('book', previous.title, tags)
-      } catch (error) {
-        console.error(`Failed to update book tags for ${bookId}:`, error)
-        set((state) => {
-          const book = state.books[bookId]
-          if (book) applyFileTags(book, rollback)
-        })
-      }
     },
     updateComicTags: async (comicId, tags) => {
       const previous = get().comics[comicId]
       if (!previous) return
-      const rollback = {
-        starred: previous.starred,
-        deleted: previous.deleted,
-      }
+      const rollback = snapshotFileTags(previous)
 
-      set((state) => {
-        const comic = state.comics[comicId]
-        if (comic) applyFileTags(comic, tags)
+      await commitTagUpdate({
+        target: comicTagTarget(previous),
+        tags,
+        latestTags,
+        apply: () =>
+          set((state) => {
+            const comic = state.comics[comicId]
+            if (comic) applyFileTags(comic, tags)
+          }),
+        rollback: () =>
+          set((state) => {
+            const comic = state.comics[comicId]
+            if (comic) applyFileTags(comic, rollback)
+          }),
+        errorMessage: `Failed to update comic tags for ${comicId}:`,
       })
-
-      try {
-        await patchRemoteTags({
-          targetType: 'comic',
-          targetId: previous.title,
-          tags,
-        })
-        updateLatestTags('comic', previous.title, tags)
-      } catch (error) {
-        console.error(`Failed to update comic tags for ${comicId}:`, error)
-        set((state) => {
-          const comic = state.comics[comicId]
-          if (comic) applyFileTags(comic, rollback)
-        })
-      }
     },
     updateComicImageTags: async (comicId, imageKey, tags) => {
       const previous = get().comicImages[comicId]?.images.find(
         (image) => image.path === imageKey,
       )
       if (!previous) return
-      const rollback = {
-        starred: previous.starred,
-        deleted: previous.deleted,
-      }
+      const rollback = snapshotFileTags(previous)
 
-      set((state) => {
-        const image = state.comicImages[comicId]?.images.find(
-          (item) => item.path === imageKey,
-        )
-        if (image) applyFileTags(image, tags)
+      await commitTagUpdate({
+        target: imageTagTarget(imageKey),
+        tags,
+        latestTags,
+        apply: () =>
+          set((state) => {
+            const image = state.comicImages[comicId]?.images.find(
+              (item) => item.path === imageKey,
+            )
+            if (image) applyFileTags(image, tags)
+          }),
+        rollback: () =>
+          set((state) => {
+            const image = state.comicImages[comicId]?.images.find(
+              (item) => item.path === imageKey,
+            )
+            if (image) applyFileTags(image, rollback)
+          }),
+        errorMessage: `Failed to update image tags for ${imageKey}:`,
       })
-
-      try {
-        await patchRemoteTags({ targetType: 'image', targetId: imageKey, tags })
-        updateLatestTags('image', imageKey, tags)
-      } catch (error) {
-        console.error(`Failed to update image tags for ${imageKey}:`, error)
-        set((state) => {
-          const image = state.comicImages[comicId]?.images.find(
-            (item) => item.path === imageKey,
-          )
-          if (image) applyFileTags(image, rollback)
-        })
-      }
     },
     updateBookChapterTags: async (bookId, lineIndex, tags) => {
       const book = get().books[bookId]
@@ -539,37 +505,28 @@ export const useLibraryStore = create<LibraryState>()(
         (chapter) => chapter.lineIndex === lineIndex,
       )
       if (!book || !previous) return
-      const rollback = { starred: previous.starred }
+      const rollback = snapshotFileTags(previous)
 
-      set((state) => {
-        const chapter = state.books[bookId]?.chapters.find(
-          (item) => item.lineIndex === lineIndex,
-        )
-        if (chapter && tags.starred !== undefined) {
-          chapter.starred = tags.starred
-        }
+      await commitTagUpdate({
+        target: chapterTagTarget(book, previous),
+        tags,
+        latestTags,
+        apply: () =>
+          set((state) => {
+            const chapter = state.books[bookId]?.chapters.find(
+              (item) => item.lineIndex === lineIndex,
+            )
+            if (chapter) applyFileTags(chapter, tags)
+          }),
+        rollback: () =>
+          set((state) => {
+            const chapter = state.books[bookId]?.chapters.find(
+              (item) => item.lineIndex === lineIndex,
+            )
+            if (chapter) applyFileTags(chapter, rollback)
+          }),
+        errorMessage: `Failed to update chapter tags for ${bookId}:${lineIndex}:`,
       })
-
-      try {
-        const targetId = chapterTagId(book.title, previous.title)
-        await patchRemoteTags({
-          targetType: 'chapter',
-          targetId,
-          tags,
-        })
-        updateLatestTags('chapter', targetId, tags)
-      } catch (error) {
-        console.error(
-          `Failed to update chapter tags for ${bookId}:${lineIndex}:`,
-          error,
-        )
-        set((state) => {
-          const chapter = state.books[bookId]?.chapters.find(
-            (item) => item.lineIndex === lineIndex,
-          )
-          if (chapter) chapter.starred = rollback.starred
-        })
-      }
     },
 
     getComicImages: async (comicId, { force = false }: ResourceLoadOptions = {}) => {

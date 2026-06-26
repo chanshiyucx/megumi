@@ -1,9 +1,9 @@
 import { Book as BookIcon, Folder, Star, Trash2 } from 'lucide-react'
-import { useRef } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { usePanelNav } from '@/hooks/use-panel-nav'
+import { selectOrderedBooksForAuthor } from '@/lib/library-queries'
 import { cn } from '@/lib/style'
 import { useLibraryStore } from '@/store/library'
 import { useProgressStore } from '@/store/progress'
@@ -81,10 +81,6 @@ interface BookLibraryProps {
 }
 
 export function BookLibrary({ selectedLibrary }: BookLibraryProps) {
-  const sortedIdsCache = useRef<{ authorId: string; bookIds: string[] }>({
-    authorId: '',
-    bookIds: [],
-  })
   const setNavStatus = useUIStore((s) => s.setNavStatus)
   const { middleClass, readerClass, openReader } = usePanelNav()
 
@@ -103,24 +99,7 @@ export function BookLibrary({ selectedLibrary }: BookLibraryProps) {
   )
 
   const books = useLibraryStore(
-    useShallow((s) => {
-      if (!authorId) return []
-
-      const bookIds = s.authorBooks[authorId] ?? []
-
-      if (sortedIdsCache.current.authorId !== authorId) {
-        const sortedIds = bookIds.toSorted((idA, idB) => {
-          const a = s.books[idA]
-          const b = s.books[idB]
-          if (a.deleted !== b.deleted) return a.deleted ? 1 : -1
-          if (a.starred !== b.starred) return a.starred ? -1 : 1
-          return 0
-        })
-        sortedIdsCache.current = { authorId, bookIds: sortedIds }
-      }
-
-      return sortedIdsCache.current.bookIds.map((id) => s.books[id])
-    }),
+    useShallow((s) => selectOrderedBooksForAuthor(s, authorId)),
   )
 
   const handleSelectAuthor = (id: string) => {

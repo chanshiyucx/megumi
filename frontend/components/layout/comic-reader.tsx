@@ -1,7 +1,6 @@
 import { SquareMenu, Star, Trash2 } from 'lucide-react'
 import {
   useEffect,
-  useEffectEvent,
   useRef,
   useState,
   type TransitionEvent,
@@ -14,10 +13,7 @@ import { Spinner } from '@/components/ui/spinner'
 import { useClickOutside } from '@/hooks/use-click-outside'
 import { useComicReadingSession } from '@/hooks/use-comic-reading-session'
 import { useIsPhone } from '@/hooks/use-is-phone'
-import { SHORTCUTS } from '@/lib/shortcuts'
 import { cn } from '@/lib/style'
-import { useLibraryStore } from '@/store/library'
-import { useTabsStore } from '@/store/tabs'
 import { useUIStore } from '@/store/ui'
 import type { ComicImageStatus, FileTags, Image } from '@/types/library'
 
@@ -124,29 +120,6 @@ export function ComicReader({ comicId }: ComicReaderProps) {
   const [renderTocImages, setRenderTocImages] = useState(false)
   const isImmersive = useUIStore((s) => s.isImmersive)
   const isPhone = useIsPhone()
-  const activeTab = useTabsStore((s) => s.activeTab)
-
-  const updateComicTags = useLibraryStore((s) => s.updateComicTags)
-  const {
-    comic,
-    images,
-    comicImageStatus,
-    currentIndex,
-    previewIndex,
-    setPreviewIndex,
-    jumpTo,
-    trackStripIndex,
-    setHoveredIndex,
-    closePreview,
-    updateComicImageTags,
-    toggleTargetImageDeleted,
-    toggleTargetImageStarred,
-  } = useComicReadingSession({
-    comicId,
-    stripRef,
-    stripVisible: activeTab === comicId,
-    tagTargetPolicy: 'reader',
-  })
 
   const handleCloseToc = () => {
     setTocCollapsed(true)
@@ -156,6 +129,28 @@ export function ComicReader({ comicId }: ComicReaderProps) {
     if (isTocCollapsed) setRenderTocImages(true)
     setTocCollapsed((prev) => !prev)
   }
+
+  const {
+    comic,
+    images,
+    comicImageStatus,
+    currentIndex,
+    previewIndex,
+    setPreviewIndex,
+    previewActive,
+    jumpTo,
+    trackStripIndex,
+    setHoveredIndex,
+    closePreview,
+    toggleComicDeleted,
+    toggleComicStarred,
+    updateComicImageTags,
+  } = useComicReadingSession({
+    comicId,
+    stripRef,
+    surface: { kind: 'reader' },
+    onToggleToc: toggleToc,
+  })
 
   const handleTocTransitionEnd = (e: TransitionEvent<HTMLDivElement>) => {
     if (e.target !== e.currentTarget) return
@@ -167,37 +162,6 @@ export function ComicReader({ comicId }: ComicReaderProps) {
   const handlePreviewClose = () => {
     closePreview()
   }
-
-  const handleKeyDown = useEffectEvent((e: KeyboardEvent) => {
-    if (e.metaKey || e.ctrlKey || e.altKey) return
-    if (!comic) return
-    if (activeTab !== comic.id) return
-
-    switch (e.code) {
-      case SHORTCUTS.toggleToc:
-        toggleToc()
-        break
-      case SHORTCUTS.toggleItemDeleted:
-        void updateComicTags(comic.id, { deleted: !comic.deleted })
-        break
-      case SHORTCUTS.toggleItemStarred:
-        void updateComicTags(comic.id, { starred: !comic.starred })
-        break
-      case SHORTCUTS.toggleImageDeleted:
-        toggleTargetImageDeleted()
-        break
-      case SHORTCUTS.toggleImageStarred:
-        toggleTargetImageStarred()
-        break
-    }
-  })
-
-  useEffect(() => {
-    window.addEventListener('keydown', handleKeyDown)
-    return () => {
-      window.removeEventListener('keydown', handleKeyDown)
-    }
-  }, [])
 
   if (!comic) return null
 
@@ -254,9 +218,7 @@ export function ComicReader({ comicId }: ComicReaderProps) {
 
           <Button
             className="h-6 w-6"
-            onClick={() =>
-              void updateComicTags(comic.id, { deleted: !comic.deleted })
-            }
+            onClick={toggleComicDeleted}
             title="标记删除"
           >
             <Trash2
@@ -266,9 +228,7 @@ export function ComicReader({ comicId }: ComicReaderProps) {
 
           <Button
             className="h-6 w-6"
-            onClick={() =>
-              void updateComicTags(comic.id, { starred: !comic.starred })
-            }
+            onClick={toggleComicStarred}
             title="标记收藏"
           >
             <Star
@@ -308,7 +268,7 @@ export function ComicReader({ comicId }: ComicReaderProps) {
       <ImagePreviewOverlay
         comicId={comicId}
         images={images}
-        active={activeTab === comicId}
+        active={previewActive}
         index={previewIndex}
         onIndexChange={setPreviewIndex}
         onClose={handlePreviewClose}

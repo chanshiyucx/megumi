@@ -363,8 +363,8 @@ export const useLibraryStore = create<LibraryState>()(
     },
 
     refreshCurrentResource: async () => {
-      const target = resolveCurrentResource(get())
       await get().hydrate()
+      const target = resolveCurrentResource(get())
       if (!target) return
 
       const state = get()

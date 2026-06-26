@@ -23,7 +23,7 @@ function TabContent({ tab, isActive, isImmersive }: TabContentProps) {
       )}
     >
       {type === LibraryType.book ? (
-        <BookReader bookId={id} />
+        <BookReader bookId={id} surface="tab" />
       ) : (
         <ComicReader comicId={id} />
       )}

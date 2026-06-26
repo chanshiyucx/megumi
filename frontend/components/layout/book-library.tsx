@@ -156,7 +156,7 @@ export function BookLibrary({ selectedLibrary }: BookLibraryProps) {
       </div>
 
       <div className={cn('min-h-0 min-w-0 flex-1', readerClass)}>
-        {bookId && <BookReader bookId={bookId} showReading />}
+        {bookId && <BookReader bookId={bookId} surface="library" showReading />}
       </div>
     </div>
   )

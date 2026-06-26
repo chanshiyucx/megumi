@@ -102,10 +102,15 @@ function TableOfContents({
 
 interface BookReaderProps {
   bookId: string
+  surface: 'library' | 'tab'
   showReading?: boolean
 }
 
-export function BookReader({ bookId, showReading = false }: BookReaderProps) {
+export function BookReader({
+  bookId,
+  surface,
+  showReading = false,
+}: BookReaderProps) {
   const {
     book,
     content,
@@ -125,7 +130,7 @@ export function BookReader({ bookId, showReading = false }: BookReaderProps) {
     toggleBookDeleted,
     toggleBookStarred,
     toggleChapterStarred,
-  } = useBookReadingSession({ bookId })
+  } = useBookReadingSession({ bookId, surface })
 
   const renderItem = (_index: number, line: string) => <BookLine line={line} />
 

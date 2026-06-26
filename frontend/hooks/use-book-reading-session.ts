@@ -25,10 +25,12 @@ interface BookData {
 
 interface UseBookReadingSessionOptions {
   bookId: string
+  surface: 'library' | 'tab'
 }
 
 export function useBookReadingSession({
   bookId,
+  surface,
 }: UseBookReadingSessionOptions) {
   const virtuosoRef = useRef<VirtuosoHandle>(null)
   const [isTocCollapsed, setTocCollapsed] = useState(true)
@@ -119,8 +121,10 @@ export function useBookReadingSession({
   }, [lockScroll, bookId])
 
   useLayoutEffect(() => {
+    if (surface === 'tab' && activeTab !== bookId) return
+    if (surface === 'library' && activeTab) return
     jumpToFn()
-  }, [activeTab])
+  }, [activeTab, bookId, surface])
 
   const trackRange = (range: { startIndex: number; endIndex: number }) => {
     if (isLock.current) return
@@ -172,7 +176,8 @@ export function useBookReadingSession({
   const handleKeyDown = useEffectEvent((e: KeyboardEvent) => {
     if (e.metaKey || e.ctrlKey || e.altKey) return
     if (!book) return
-    if (activeTab && activeTab !== book.id) return
+    if (surface === 'tab' && activeTab !== book.id) return
+    if (surface === 'library' && activeTab) return
 
     switch (e.code) {
       case SHORTCUTS.toggleToc:

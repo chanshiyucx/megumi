@@ -781,11 +781,17 @@ fn discover_units(
         }
     }
 
-    let removed_units = cached
+    let mut removed_units: Vec<String> = cached
         .keys()
         .filter(|key| !seen.contains(*key))
         .cloned()
         .collect();
+    removed_units.extend(
+        dirty
+            .iter()
+            .filter(|key| !seen.contains(*key) && !cached.contains_key(*key))
+            .cloned(),
+    );
     Ok(UnitDiscovery {
         work,
         removed_units,
@@ -2456,6 +2462,29 @@ mod tests {
             comics["comics"][0]["coverMtimeMs"],
             detail["pages"][0]["mtimeMs"]
         );
+    }
+
+    #[test]
+    fn build_clears_stale_dirty_keys_for_ignored_files() {
+        let temp = TestDir::new();
+        let source = &temp.0;
+        write_test_image(&source.join("Comics/One/001.png"), [255, 0, 0]);
+        build_test_library(source);
+
+        let mut database = state::StateDb::open(source).unwrap();
+        database
+            .enqueue_changes(&["Comics/.DS_Store".to_string()], fsevents::current_cursor())
+            .unwrap();
+        assert_eq!(
+            database.dirty_units().unwrap(),
+            vec!["Comics/.DS_Store".to_string()]
+        );
+        drop(database);
+
+        build_test_library(source);
+
+        let database = state::StateDb::open(source).unwrap();
+        assert!(database.dirty_units().unwrap().is_empty());
     }
 
     #[test]

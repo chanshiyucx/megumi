@@ -73,10 +73,7 @@ fn record_recursive_rescan(root: &Path, path: &Path, batch: &mut ChangeBatch) {
         return;
     };
     let parts = normal_parts(relative);
-    if parts
-        .first()
-        .is_some_and(|name| is_managed_or_ignored(name))
-    {
+    if parts.iter().any(|name| is_managed_or_ignored(name)) {
         return;
     }
     if parts.len() >= 2 {
@@ -117,10 +114,10 @@ fn record_path_change(root: &Path, path: &Path, batch: &mut ChangeBatch) {
         return;
     };
     let parts = normal_parts(relative);
-    let Some(first) = parts.first() else {
+    if parts.is_empty() {
         return;
-    };
-    if is_managed_or_ignored(first) {
+    }
+    if parts.iter().any(|name| is_managed_or_ignored(name)) {
         return;
     }
     if parts.len() < 2 {
@@ -173,6 +170,16 @@ mod tests {
         let root = Path::new("/library");
         let mut batch = ChangeBatch::default();
         record_path_change(root, Path::new("/library/.megumi/build.lock"), &mut batch);
+        assert!(batch.unit_keys.is_empty());
+        assert!(!batch.requires_full_scan);
+    }
+
+    #[test]
+    fn ignores_hidden_files_inside_libraries() {
+        let root = Path::new("/library");
+        let mut batch = ChangeBatch::default();
+        record_path_change(root, Path::new("/library/Books/.DS_Store"), &mut batch);
+        record_path_change(root, Path::new("/library/Books/Author/.DS_Store"), &mut batch);
         assert!(batch.unit_keys.is_empty());
         assert!(!batch.requires_full_scan);
     }

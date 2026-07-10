@@ -1,6 +1,10 @@
 import { SquareMenu, Star, StepForward, Trash2 } from 'lucide-react'
-import { useRef } from 'react'
-import { Virtuoso } from 'react-virtuoso'
+import { type RefObject, useLayoutEffect, useRef, useState } from 'react'
+import {
+  type ListRange,
+  Virtuoso,
+  type VirtuosoHandle,
+} from 'react-virtuoso'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Spinner } from '@/components/ui/spinner'
@@ -14,11 +18,143 @@ const ReaderPadding = {
   Footer: () => <div className="h-16" />,
 }
 
+const TOP_OVERSCAN_PX = 800
+const BOTTOM_OVERSCAN_PX = 200
+const RESIZE_ESTIMATE_DELAY_MS = 120
+
 function BookLine({ line }: { line: string }) {
   return (
     <p className="text-text mx-auto w-full px-4 pb-4 font-serif leading-relaxed wrap-break-word whitespace-pre-wrap select-text!">
       {line}
     </p>
+  )
+}
+
+function pixelValue(value: string) {
+  const parsed = Number.parseFloat(value)
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+function estimateLineHeights(
+  lines: readonly string[],
+  paragraph: HTMLParagraphElement,
+) {
+  const style = getComputedStyle(paragraph)
+  const horizontalPadding =
+    pixelValue(style.paddingLeft) + pixelValue(style.paddingRight)
+  const verticalPadding =
+    pixelValue(style.paddingTop) + pixelValue(style.paddingBottom)
+  const contentWidth = Math.max(1, paragraph.clientWidth - horizontalPadding)
+  const fontSize = pixelValue(style.fontSize)
+  const lineHeight = pixelValue(style.lineHeight) || fontSize
+  const wrapWidth = Math.max(1, contentWidth - fontSize)
+  const letterSpacing = pixelValue(style.letterSpacing)
+  const context = document.createElement('canvas').getContext('2d')
+
+  if (context) {
+    context.font =
+      style.font ||
+      `${style.fontStyle} ${style.fontVariant} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`
+  }
+
+  const fullWidthCharacter = context?.measureText('汉').width || fontSize
+  const asciiCharacterWidths = Array.from({ length: 128 }, (_, code) =>
+    context ? context.measureText(String.fromCharCode(code)).width : fontSize,
+  )
+
+  return lines.map((line) => {
+    let measuredWidth = line.length * fullWidthCharacter
+    for (let index = 0; index < line.length; index += 1) {
+      const code = line.charCodeAt(index)
+      if (code < asciiCharacterWidths.length) {
+        measuredWidth += asciiCharacterWidths[code] - fullWidthCharacter
+      }
+    }
+    measuredWidth += Math.max(0, line.length - 1) * letterSpacing
+    const visualLineCount = Math.max(1, Math.ceil(measuredWidth / wrapWidth))
+
+    return Math.ceil(verticalPadding + visualLineCount * lineHeight)
+  })
+}
+
+interface VirtualBookProps {
+  initialTopMostItemIndex: number
+  lines: readonly string[]
+  rangeChanged: (range: ListRange) => void
+  virtuosoRef: RefObject<VirtuosoHandle | null>
+}
+
+function VirtualBook({
+  initialTopMostItemIndex,
+  lines,
+  rangeChanged,
+  virtuosoRef,
+}: VirtualBookProps) {
+  const probeRef = useRef<HTMLDivElement>(null)
+  const [estimation, setEstimation] = useState<{
+    heights: number[]
+    lines: readonly string[]
+    width: number
+  } | null>(null)
+  const hasCurrentEstimates = estimation?.lines === lines
+
+  useLayoutEffect(() => {
+    const probe = probeRef.current
+    const paragraph = probe?.querySelector('p')
+    if (!probe || !paragraph) return
+
+    let lastEstimatedWidth = 0
+    let resizeTimer: ReturnType<typeof setTimeout> | undefined
+    const estimate = () => {
+      const width = paragraph.clientWidth
+      if (width <= 0 || width === lastEstimatedWidth) return
+      lastEstimatedWidth = width
+      const heights = estimateLineHeights(lines, paragraph)
+      setEstimation({ heights, lines, width })
+    }
+    const scheduleEstimate = () => {
+      clearTimeout(resizeTimer)
+      resizeTimer = setTimeout(estimate, RESIZE_ESTIMATE_DELAY_MS)
+    }
+
+    const observer = new ResizeObserver(scheduleEstimate)
+    observer.observe(probe)
+    estimate()
+
+    return () => {
+      clearTimeout(resizeTimer)
+      observer.disconnect()
+    }
+  }, [lines])
+
+  return (
+    <div className="relative min-h-0 flex-1">
+      {hasCurrentEstimates ? (
+        <Virtuoso
+          key={estimation.width}
+          ref={virtuosoRef}
+          className="h-full"
+          data={lines}
+          heightEstimates={estimation.heights}
+          initialTopMostItemIndex={initialTopMostItemIndex}
+          rangeChanged={rangeChanged}
+          itemContent={(_index, line) => <BookLine line={line} />}
+          components={ReaderPadding}
+          increaseViewportBy={{
+            top: TOP_OVERSCAN_PX,
+            bottom: BOTTOM_OVERSCAN_PX,
+          }}
+        />
+      ) : null}
+      <div
+        aria-hidden="true"
+        className="invisible absolute inset-0 overflow-y-scroll"
+      >
+        <div ref={probeRef}>
+          <BookLine line="测量" />
+        </div>
+      </div>
+    </div>
   )
 }
 
@@ -132,8 +268,6 @@ export function BookReader({
     toggleChapterStarred,
   } = useBookReadingSession({ bookId, surface })
 
-  const renderItem = (_index: number, line: string) => <BookLine line={line} />
-
   if (!book) return null
 
   if (!content) {
@@ -232,16 +366,12 @@ export function BookReader({
         </div>
       </div>
 
-      <Virtuoso
+      <VirtualBook
         key={bookId}
-        ref={virtuosoRef}
-        className="flex-1"
-        data={lines}
+        virtuosoRef={virtuosoRef}
+        lines={lines}
         initialTopMostItemIndex={currentIndex}
         rangeChanged={trackRange}
-        itemContent={renderItem}
-        components={ReaderPadding}
-        increaseViewportBy={{ top: 0, bottom: 200 }}
       />
     </div>
   )

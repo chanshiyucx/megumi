@@ -11,7 +11,8 @@ It exposes:
 returns an R2-backed `ETag` and responds with `304 Not Modified` when the tags
 have not changed, avoiding repeated JSON transfers without serving stale state.
 
-State is stored at `.megumi/tags.json` in the `MEGUMI_BUCKET` R2 binding. The
+State for comics, books, videos, images, and chapters is stored at
+`.megumi/tags.json` in the `MEGUMI_BUCKET` R2 binding. The
 file stores only `true` values; missing values mean `false`.
 
 The default Wrangler environment is production:

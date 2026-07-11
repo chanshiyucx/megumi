@@ -1,11 +1,12 @@
 import type { FileTags } from '@/types/library'
 
-type TagTargetType = 'comic' | 'book' | 'image' | 'chapter'
+type TagTargetType = 'comic' | 'book' | 'video' | 'image' | 'chapter'
 
 export interface RemoteTags {
   version: 1
   comics: Record<string, FileTags>
   books: Record<string, FileTags>
+  videos: Record<string, FileTags>
   images: Record<string, FileTags>
   chapters: Record<string, FileTags>
   updatedAt?: string
@@ -21,6 +22,7 @@ const EMPTY_TAGS: RemoteTags = {
   version: 1,
   comics: {},
   books: {},
+  videos: {},
   images: {},
   chapters: {},
 }
@@ -36,6 +38,7 @@ function normalizeTags(value: unknown): RemoteTags {
     version: 1,
     comics: source.comics ?? {},
     books: source.books ?? {},
+    videos: source.videos ?? {},
     images: source.images ?? {},
     chapters: source.chapters ?? {},
     updatedAt: source.updatedAt,

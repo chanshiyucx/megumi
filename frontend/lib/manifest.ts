@@ -1,4 +1,4 @@
-import type { Author, Book, Comic, Image, Library } from '@/types/library'
+import type { Author, Book, Comic, Image, Library, Video } from '@/types/library'
 import { chapterTagId, fetchRemoteTags, type RemoteTags } from '@/lib/tags'
 
 interface PageManifest {
@@ -17,7 +17,7 @@ interface ComicSummaryManifest {
 }
 
 interface ComicManifest {
-  schemaVersion: 4
+  schemaVersion: 5
   title: string
   pages: PageManifest[]
 }
@@ -34,7 +34,7 @@ interface ChapterManifest {
 }
 
 interface BookDetailManifest {
-  schemaVersion: 4
+  schemaVersion: 5
   title: string
   lineCount: number
   chapters: ChapterManifest[]
@@ -43,6 +43,17 @@ interface BookDetailManifest {
 interface AuthorManifest {
   name: string
   books: BookManifest[]
+}
+
+interface VideoManifest {
+  title: string
+  key: string
+  coverKey: string
+  mtimeMs: number
+  size: number
+  width: number
+  height: number
+  durationMs: number
 }
 
 type LibraryManifest =
@@ -56,9 +67,14 @@ type LibraryManifest =
       title: string
       authors: AuthorManifest[]
     }
+  | {
+      kind: 'video'
+      title: string
+      videos: VideoManifest[]
+    }
 
 interface Manifest {
-  schemaVersion: 4
+  schemaVersion: 5
   generatedAt: string
   libraries: LibraryManifest[]
 }
@@ -68,6 +84,7 @@ export interface RemoteCatalog {
   comics: Comic[]
   authors: Author[]
   books: Book[]
+  videos: Video[]
   comicSources: Record<string, RemoteComicSource>
   bookSources: Record<string, RemoteBookSource>
   tags: RemoteTags
@@ -130,6 +147,7 @@ async function fetchTagsOrEmpty(): Promise<RemoteTags> {
       version: 1,
       comics: {},
       books: {},
+      videos: {},
       images: {},
       chapters: {},
     }
@@ -157,6 +175,7 @@ export async function fetchRemoteCatalog({
   const comics: Comic[] = []
   const authors: Author[] = []
   const books: Book[] = []
+  const videos: Video[] = []
   const comicSources: Record<string, RemoteComicSource> = {}
   const bookSources: Record<string, RemoteBookSource> = {}
 
@@ -194,6 +213,35 @@ export async function fetchRemoteCatalog({
           libraryId,
           starred: Boolean(comicTags.starred),
           deleted: Boolean(comicTags.deleted),
+        })
+      }
+      return
+    }
+
+    if (sourceLibrary.kind === 'video') {
+      for (const sourceVideo of sourceLibrary.videos) {
+        const videoId = stripExtension(sourceVideo.key)
+        const videoTags = tags.videos[sourceVideo.title] ?? {}
+        videos.push({
+          id: videoId,
+          title: sourceVideo.title,
+          path: versionedAssetUrl(
+            manifestUrl,
+            sourceVideo.key,
+            sourceVideo.mtimeMs,
+          ),
+          cover: versionedAssetUrl(
+            manifestUrl,
+            sourceVideo.coverKey,
+            sourceVideo.mtimeMs,
+          ),
+          libraryId,
+          starred: Boolean(videoTags.starred),
+          deleted: Boolean(videoTags.deleted),
+          durationMs: sourceVideo.durationMs,
+          width: sourceVideo.width,
+          height: sourceVideo.height,
+          size: sourceVideo.size,
         })
       }
       return
@@ -238,7 +286,16 @@ export async function fetchRemoteCatalog({
     }
   })
 
-  return { libraries, comics, authors, books, comicSources, bookSources, tags }
+  return {
+    libraries,
+    comics,
+    authors,
+    books,
+    videos,
+    comicSources,
+    bookSources,
+    tags,
+  }
 }
 
 export async function fetchRemoteBookChapters(

@@ -3,6 +3,9 @@ name = "megumi-backend"
 version = "0.1.0"
 edition = "2024"
 
+# Building a video library also requires ffmpeg and ffprobe on PATH. They are
+# invoked only for MP4 metadata inspection and WebP cover extraction.
+
 [dependencies]
 anyhow = "1.0.100"
 blake3 = "1.8.2"

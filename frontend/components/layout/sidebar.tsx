@@ -12,7 +12,7 @@ import {
   useSortable,
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
-import { BookImage, LibraryBig } from "lucide-react";
+import { BookImage, Clapperboard, LibraryBig } from "lucide-react";
 import { ThemeSwitcher } from "@/components/layout/theme-switcher";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -25,6 +25,7 @@ import { LibraryType, type Library } from "@/types/library";
 const LibraryIcon = {
   [LibraryType.book]: LibraryBig,
   [LibraryType.comic]: BookImage,
+  [LibraryType.video]: Clapperboard,
 };
 
 const POINTER_SENSOR_OPTIONS = { activationConstraint: { distance: 8 } };

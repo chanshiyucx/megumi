@@ -11,8 +11,8 @@ project:
 - `types`
 - `styles`
 
-The app loads the remote schema v3 `manifest.json` directly in the browser.
-Comic and book summaries are available immediately; comic page metadata and
+The app loads the remote schema v5 `manifest.json` directly in the browser.
+Comic, book, and video summaries are available immediately; comic page metadata and
 book chapter metadata are fetched from `manifests/<resource-path>.json` when
 opened. Images, thumbnails, and UTF-8 book files are then read from their
 resolved object-storage URLs. Set `NEXT_PUBLIC_MEGUMI_MANIFEST_URL` at build
@@ -36,6 +36,10 @@ reading and writing production tag state.
 The remote origin must return an `Access-Control-Allow-Origin` header that
 permits the frontend origin. This applies to the manifest and UTF-8 book files;
 comic images use the same resolved object-storage base URL.
+
+MP4 videos are streamed directly from the resolved object-storage URL. The
+origin must support byte-range requests so seeking does not require downloading
+the complete video first.
 
 ## Development
 

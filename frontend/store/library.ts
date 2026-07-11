@@ -17,6 +17,7 @@ import {
   imageTagTarget,
   readRemoteTags,
   snapshotFileTags,
+  videoTagTarget,
 } from '@/lib/tag-actions'
 import type { RemoteTags } from '@/lib/tags'
 import { useUIStore } from '@/store/ui'
@@ -31,6 +32,7 @@ import type {
   Image,
   Library,
   LibraryType,
+  Video,
 } from '@/types/library'
 
 const collator = new Intl.Collator(undefined, {
@@ -61,9 +63,11 @@ interface LibraryState {
   comics: Record<string, Comic>
   authors: Record<string, Author>
   books: Record<string, Book>
+  videos: Record<string, Video>
   libraryComics: Record<string, string[]>
   libraryAuthors: Record<string, string[]>
   authorBooks: Record<string, string[]>
+  libraryVideos: Record<string, string[]>
   comicImages: Record<string, ComicImage>
   comicSources: Record<string, RemoteComicSource>
   bookSources: Record<string, RemoteBookSource>
@@ -84,6 +88,7 @@ interface LibraryState {
   ) => Promise<Book['chapters']>
   updateBookTags: (bookId: string, tags: FileTags) => Promise<void>
   updateComicTags: (comicId: string, tags: FileTags) => Promise<void>
+  updateVideoTags: (videoId: string, tags: FileTags) => Promise<void>
   updateComicImageTags: (
     comicId: string,
     imageKey: string,
@@ -206,6 +211,15 @@ function buildMaps(
   for (const ids of Object.values(authorBooks))
     ids.sort((a, b) => collator.compare(books[a].title, books[b].title))
 
+  const videos: Record<string, Video> = {}
+  const libraryVideos: Record<string, string[]> = {}
+  for (const video of catalog.videos) {
+    videos[video.id] = video
+    ;(libraryVideos[video.libraryId] ??= []).push(video.id)
+  }
+  for (const ids of Object.values(libraryVideos))
+    ids.sort((a, b) => collator.compare(videos[a].title, videos[b].title))
+
   const comicImages: Record<string, ComicImage> = {}
   for (const comic of catalog.comics) {
     const comicId = comic.id
@@ -244,9 +258,11 @@ function buildMaps(
     comics,
     authors,
     books,
+    videos,
     libraryComics,
     libraryAuthors,
     authorBooks,
+    libraryVideos,
     comicImages,
     comicSources: catalog.comicSources,
     bookSources: catalog.bookSources,
@@ -257,10 +273,11 @@ function buildMaps(
 function pruneTabsForCatalog(
   comics: Record<string, Comic>,
   books: Record<string, Book>,
+  videos: Record<string, Video>,
 ) {
   const invalidTabIds = useTabsStore
     .getState()
-    .tabs.filter((tab) => !comics[tab.id] && !books[tab.id])
+    .tabs.filter((tab) => !comics[tab.id] && !books[tab.id] && !videos[tab.id])
     .map((tab) => tab.id)
 
   for (const tabId of invalidTabIds) {
@@ -268,7 +285,7 @@ function pruneTabsForCatalog(
   }
 
   const activeTab = useTabsStore.getState().activeTab
-  if (activeTab && !comics[activeTab] && !books[activeTab]) {
+  if (activeTab && !comics[activeTab] && !books[activeTab] && !videos[activeTab]) {
     useTabsStore.getState().setActiveTab('')
   }
 }
@@ -292,6 +309,9 @@ function resolveCurrentResource(state: LibraryState): CurrentResource | null {
   if (library.type === 'book' && navStatus.bookId) {
     return { type: library.type, id: navStatus.bookId }
   }
+  if (library.type === 'video' && navStatus.videoId) {
+    return { type: library.type, id: navStatus.videoId }
+  }
 
   return null
 }
@@ -302,9 +322,11 @@ export const useLibraryStore = create<LibraryState>()(
     comics: {},
     authors: {},
     books: {},
+    videos: {},
     libraryComics: {},
     libraryAuthors: {},
     authorBooks: {},
+    libraryVideos: {},
     comicImages: {},
     comicSources: {},
     bookSources: {},
@@ -344,7 +366,7 @@ export const useLibraryStore = create<LibraryState>()(
           if (!ui.selectedLibraryId || !maps.libraries[ui.selectedLibraryId]) {
             ui.setSelectedLibraryId(orderedLibraryIds[0] ?? null)
           }
-          pruneTabsForCatalog(maps.comics, maps.books)
+          pruneTabsForCatalog(maps.comics, maps.books, maps.videos)
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error)
           console.error('Failed to fetch manifest:', error)
@@ -373,6 +395,8 @@ export const useLibraryStore = create<LibraryState>()(
         await get().getComicImages(target.id, { force: true })
         return
       }
+
+      if (target.type === 'video') return
 
       if (!state.books[target.id]) return
       set((state) => {
@@ -469,6 +493,28 @@ export const useLibraryStore = create<LibraryState>()(
             if (comic) applyFileTags(comic, rollback)
           }),
         errorMessage: `Failed to update comic tags for ${comicId}:`,
+      })
+    },
+    updateVideoTags: async (videoId, tags) => {
+      const previous = get().videos[videoId]
+      if (!previous) return
+      const rollback = snapshotFileTags(previous)
+
+      await commitTagUpdate({
+        target: videoTagTarget(previous),
+        tags,
+        latestTags,
+        apply: () =>
+          set((state) => {
+            const video = state.videos[videoId]
+            if (video) applyFileTags(video, tags)
+          }),
+        rollback: () =>
+          set((state) => {
+            const video = state.videos[videoId]
+            if (video) applyFileTags(video, rollback)
+          }),
+        errorMessage: `Failed to update video tags for ${videoId}:`,
       })
     },
     updateComicImageTags: async (comicId, imageKey, tags) => {

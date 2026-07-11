@@ -1,4 +1,4 @@
-import type { Book, Comic } from '@/types/library'
+import type { Book, Comic, Video } from '@/types/library'
 
 interface TaggedItem {
   starred: boolean
@@ -13,6 +13,11 @@ interface ComicCollectionState {
 interface BookCollectionState {
   books: Record<string, Book>
   authorBooks: Record<string, string[]>
+}
+
+interface VideoCollectionState {
+  videos: Record<string, Video>
+  libraryVideos: Record<string, string[]>
 }
 
 function exists<T>(value: T | undefined): value is T {
@@ -41,6 +46,16 @@ export function selectOrderedBooksForAuthor(
 ) {
   return (state.authorBooks[authorId] ?? [])
     .map((id) => state.books[id])
+    .filter(exists)
+    .toSorted(compareTagPriority)
+}
+
+export function selectOrderedVideosForLibrary(
+  state: VideoCollectionState,
+  libraryId: string,
+) {
+  return (state.libraryVideos[libraryId] ?? [])
+    .map((id) => state.videos[id])
     .filter(exists)
     .toSorted(compareTagPriority)
 }

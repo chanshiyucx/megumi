@@ -4,6 +4,7 @@ use std::io::{BufRead, BufReader, Cursor, Write};
 use std::os::raw::c_int;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+use std::process::Command as ProcessCommand;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -24,11 +25,12 @@ const COMIC_MANIFEST_DIR: &str = "manifests";
 const TAGS_FILE: &str = ".megumi/tags.json";
 const BUILD_LOCK_FILE: &str = ".megumi/build.lock";
 const THUMBNAIL_DIR: &str = "thumbnail";
-const SCHEMA_VERSION: u32 = 4;
+const SCHEMA_VERSION: u32 = 5;
 const THUMBNAIL_WIDTH: u32 = 256;
 const THUMBNAIL_QUALITY: u8 = 72;
 const IMAGE_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png"];
 const BOOK_EXTENSIONS: &[&str] = &["txt"];
+const VIDEO_EXTENSIONS: &[&str] = &["mp4"];
 const FULL_SCAN_INTERVAL_MS: u64 = 30 * 24 * 60 * 60 * 1000;
 const MAX_THUMBNAIL_WORKERS: usize = 8;
 #[cfg(target_os = "macos")]
@@ -94,6 +96,24 @@ enum LibraryManifest {
         title: String,
         authors: Vec<AuthorManifest>,
     },
+    Video {
+        title: String,
+        videos: Vec<VideoManifest>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields)]
+struct VideoManifest {
+    title: String,
+    key: String,
+    cover_key: String,
+    mtime_ms: u64,
+    size: u64,
+    width: u32,
+    height: u32,
+    duration_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -171,6 +191,8 @@ struct RemoteTags {
     #[serde(default)]
     books: BTreeMap<String, FileTags>,
     #[serde(default)]
+    videos: BTreeMap<String, FileTags>,
+    #[serde(default)]
     images: BTreeMap<String, FileTags>,
 }
 
@@ -218,6 +240,32 @@ struct ComicScan {
 struct AuthorScan {
     name: String,
     book_paths: Vec<PathBuf>,
+}
+
+struct VideoScan {
+    path: PathBuf,
+    rel: String,
+    title: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct FfprobeOutput {
+    #[serde(default)]
+    streams: Vec<FfprobeStream>,
+    format: Option<FfprobeFormat>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FfprobeStream {
+    codec_type: Option<String>,
+    codec_name: Option<String>,
+    width: Option<u32>,
+    height: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FfprobeFormat {
+    duration: Option<String>,
 }
 
 struct ThumbnailWorker {
@@ -416,8 +464,16 @@ fn build(args: BuildArgs) -> Result<()> {
         .num_threads(recommended_thumbnail_workers())
         .build()
         .context("create thumbnail worker pool")?;
+    if discovery
+        .work
+        .iter()
+        .any(|work| matches!(work, UnitWork::Video { .. }))
+    {
+        ensure_video_tools()?;
+    }
     let phase_started = Instant::now();
     let mut errors = Vec::new();
+    let mut skipped_videos = Vec::new();
     for work in discovery.work {
         if INTERRUPT_COUNT.load(Ordering::SeqCst) > 0 {
             eprintln!("interrupt requested; stopping before the next content unit");
@@ -452,6 +508,24 @@ fn build(args: BuildArgs) -> Result<()> {
                 &library_title,
                 scan,
             ),
+            UnitWork::Video {
+                library_key,
+                library_title,
+                scan,
+            } => {
+                let unit_key = scan.rel.clone();
+                match build_video_unit(&mut ctx, &mut database, &library_key, &library_title, scan)
+                {
+                    Ok(()) => Ok(()),
+                    Err(error) => {
+                        eprintln!("warning: skipping video [{unit_key}]: {error:#}");
+                        database.remove_unit(&unit_key)?;
+                        remove_unit_from_memory_state(&mut ctx.next_state, &unit_key);
+                        skipped_videos.push(unit_key);
+                        Ok(())
+                    }
+                }
+            }
         };
         if let Err(error) = result {
             eprintln!("error: {error:#}");
@@ -475,6 +549,14 @@ fn build(args: BuildArgs) -> Result<()> {
             "build did not publish because {} content unit(s) remain unfinished{}",
             unfinished_units,
             details
+        );
+    }
+
+    if !skipped_videos.is_empty() {
+        eprintln!(
+            "warning: skipped {} unreadable video(s): {}",
+            skipped_videos.len(),
+            skipped_videos.join(", ")
         );
     }
 
@@ -642,6 +724,8 @@ fn sync_cached_tag_changes(
             sync_image_tags(ctx, &source_path, path, false)?;
         } else if has_extension(Path::new(path), BOOK_EXTENSIONS) {
             sync_book_tags(ctx, &source_path, &book_title(&source_path), false)?;
+        } else if has_extension(Path::new(path), VIDEO_EXTENSIONS) {
+            sync_video_tags(ctx, &source_path, &book_title(&source_path), false)?;
         }
     }
     Ok(())
@@ -673,6 +757,11 @@ enum UnitWork {
         library_title: String,
         scan: AuthorScan,
     },
+    Video {
+        library_key: String,
+        library_title: String,
+        scan: VideoScan,
+    },
 }
 
 impl UnitWork {
@@ -680,6 +769,7 @@ impl UnitWork {
         match self {
             Self::Comic { scan, .. } => &scan.rel,
             Self::Author { key, .. } => key,
+            Self::Video { scan, .. } => &scan.rel,
         }
     }
 }
@@ -691,7 +781,7 @@ fn discover_units(
     full_scan: bool,
 ) -> Result<UnitDiscovery> {
     let root = inspect_directory(source)?;
-    if !root.images.is_empty() || !root.books.is_empty() {
+    if !root.images.is_empty() || !root.books.is_empty() || !root.videos.is_empty() {
         bail!(
             "resource root contains content files directly: {}",
             source.display()
@@ -704,6 +794,38 @@ fn discover_units(
         let library_key = relative_key(source, &library_dir)?;
         let library_title = display_name(&library_dir);
         let library = inspect_directory(&library_dir)?;
+        if !library.videos.is_empty() {
+            if !library.images.is_empty()
+                || !library.books.is_empty()
+                || !library.directories.is_empty()
+            {
+                bail!(
+                    "library mixes video files with other content: {}",
+                    library_dir.display()
+                );
+            }
+            for video_path in library.videos {
+                let key = relative_key(source, &video_path)?;
+                seen.insert(key.clone());
+                let cached_unit = cached.get(&key);
+                let should_scan = full_scan
+                    || dirty.contains(&key)
+                    || cached_unit.is_none()
+                    || !cached_video_matches_source(&video_path, cached_unit.unwrap());
+                if should_scan {
+                    work.push(UnitWork::Video {
+                        library_key: library_key.clone(),
+                        library_title: library_title.clone(),
+                        scan: VideoScan {
+                            title: book_title(&video_path),
+                            path: video_path,
+                            rel: key,
+                        },
+                    });
+                }
+            }
+            continue;
+        }
         if !library.images.is_empty() || !library.books.is_empty() {
             bail!(
                 "library contains content files directly; expected content directories: {}",
@@ -713,11 +835,22 @@ fn discover_units(
         let mut library_kind = None;
         for unit_dir in library.directories {
             let key = relative_key(source, &unit_dir)?;
-            let cached_kind = cached.get(&key).map(|unit| unit.kind);
-            let should_scan = full_scan || dirty.contains(&key) || cached_kind.is_none();
+            let cached_unit = cached.get(&key);
+            let cached_kind = cached_unit.map(|unit| unit.kind);
+            let mut contents = None;
+            let mut should_scan = full_scan || dirty.contains(&key) || cached_kind.is_none();
+            if !should_scan && cached_kind == Some(state::UnitKind::Author) {
+                let current = inspect_directory(&unit_dir)?;
+                should_scan =
+                    !cached_author_matches_source(source, &current, cached_unit.unwrap())?;
+                contents = Some(current);
+            }
             let kind = if should_scan {
-                let contents = inspect_directory(&unit_dir)?;
-                if !contents.directories.is_empty() {
+                let contents = match contents {
+                    Some(contents) => contents,
+                    None => inspect_directory(&unit_dir)?,
+                };
+                if !contents.directories.is_empty() || !contents.videos.is_empty() {
                     bail!(
                         "content directory contains nested directories: {}",
                         unit_dir.display()
@@ -795,6 +928,52 @@ fn discover_units(
     Ok(UnitDiscovery {
         work,
         removed_units,
+    })
+}
+
+fn cached_author_matches_source(
+    source: &Path,
+    contents: &DirectoryContents,
+    cached: &state::CachedUnit,
+) -> Result<bool> {
+    if !contents.directories.is_empty()
+        || !contents.images.is_empty()
+        || !contents.videos.is_empty()
+    {
+        return Ok(false);
+    }
+    let Some(author) = &cached.author else {
+        return Ok(false);
+    };
+    if contents.books.len() != author.books.len() {
+        return Ok(false);
+    }
+
+    let cached_books = author
+        .books
+        .iter()
+        .map(|book| (book.key.as_str(), book.mtime_ms))
+        .collect::<BTreeMap<_, _>>();
+    for path in &contents.books {
+        let key = relative_key(source, path)?;
+        let mtime_ms = modified_ms(&path.metadata()?)?;
+        if cached_books.get(key.as_str()) != Some(&mtime_ms) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn cached_video_matches_source(path: &Path, cached: &state::CachedUnit) -> bool {
+    if cached.kind != state::UnitKind::Video {
+        return false;
+    }
+    let Some(video) = &cached.video else {
+        return false;
+    };
+    path.metadata().is_ok_and(|metadata| {
+        video.size == metadata.len()
+            && modified_ms(&metadata).is_ok_and(|mtime_ms| video.mtime_ms == mtime_ms)
     })
 }
 
@@ -886,11 +1065,218 @@ fn build_author_unit(
     Ok(())
 }
 
+fn build_video_unit(
+    ctx: &mut BuildContext,
+    database: &mut state::StateDb,
+    library_key: &str,
+    library_title: &str,
+    scan: VideoScan,
+) -> Result<()> {
+    let unit_key = scan.rel.clone();
+    eprintln!("video [{unit_key}] start");
+    remove_unit_from_memory_state(&mut ctx.next_state, &unit_key);
+
+    let metadata = scan
+        .path
+        .metadata()
+        .with_context(|| format!("read video metadata: {}", scan.path.display()))?;
+    let size = metadata.len();
+    let mtime_ms = modified_ms(&metadata)?;
+    let previous = ctx.previous_state.files.get(&unit_key);
+    sync_video_tags(ctx, &scan.path, &scan.title, previous.is_none())?;
+
+    let cover_key = thumbnail_key_for(&unit_key);
+    let cover_path = ctx.output.join(&cover_key);
+    let unchanged = previous.is_some_and(|state| {
+        state.size == size
+            && state.mtime_ms == mtime_ms
+            && state.width.is_some()
+            && state.height.is_some()
+    });
+
+    let (width, height, duration_ms, thumbnail_built) = if unchanged && cover_path.is_file() {
+        let probe = probe_video(&scan.path)?;
+        (
+            previous.and_then(|state| state.width).unwrap_or(probe.0),
+            previous.and_then(|state| state.height).unwrap_or(probe.1),
+            probe.2,
+            false,
+        )
+    } else {
+        let probe = probe_video(&scan.path)?;
+        generate_video_thumbnail(&scan.path, &cover_path, probe.2)?;
+        (probe.0, probe.1, probe.2, true)
+    };
+    ctx.progress.record_processed(thumbnail_built);
+
+    let video = VideoManifest {
+        title: scan.title.clone(),
+        key: unit_key.clone(),
+        cover_key,
+        mtime_ms,
+        size,
+        width,
+        height,
+        duration_ms,
+    };
+    ctx.next_state.files.insert(
+        unit_key.clone(),
+        FileState {
+            size,
+            mtime_ms,
+            width: Some(width),
+            height: Some(height),
+        },
+    );
+    let files = unit_files(&ctx.next_state, &unit_key);
+    database.save_video(state::VideoCommit {
+        unit: state::UnitIdentity {
+            key: &unit_key,
+            library_key,
+            library_title,
+            title: &scan.title,
+        },
+        video: &video,
+        files: &files,
+    })?;
+    eprintln!("video [{unit_key}] done");
+    Ok(())
+}
+
+fn video_tool(variable: &str, fallback: &'static str) -> String {
+    std::env::var(variable).unwrap_or_else(|_| fallback.to_string())
+}
+
+fn ensure_video_tools() -> Result<()> {
+    for (variable, fallback) in [("MEGUMI_FFPROBE", "ffprobe"), ("MEGUMI_FFMPEG", "ffmpeg")] {
+        let tool = video_tool(variable, fallback);
+        let available = ProcessCommand::new(&tool)
+            .arg("-version")
+            .output()
+            .is_ok_and(|output| output.status.success());
+        if !available {
+            bail!(
+                "{fallback} is required to build video libraries; install FFmpeg or set {variable}"
+            );
+        }
+    }
+    Ok(())
+}
+
+fn probe_video(path: &Path) -> Result<(u32, u32, u64)> {
+    let output = ProcessCommand::new(video_tool("MEGUMI_FFPROBE", "ffprobe"))
+        .args([
+            "-v",
+            "error",
+            "-show_entries",
+            "stream=codec_type,codec_name,width,height:format=duration",
+            "-of",
+            "json",
+        ])
+        .arg(path)
+        .output()
+        .with_context(|| format!("run ffprobe for {}", path.display()))?;
+    if !output.status.success() {
+        bail!(
+            "ffprobe failed for {}: {}",
+            path.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    parse_video_probe(&output.stdout, path)
+}
+
+fn parse_video_probe(output: &[u8], path: &Path) -> Result<(u32, u32, u64)> {
+    let probe: FfprobeOutput = serde_json::from_slice(output)
+        .with_context(|| format!("parse ffprobe output for {}", path.display()))?;
+    let video = probe
+        .streams
+        .iter()
+        .find(|stream| stream.codec_type.as_deref() == Some("video"))
+        .ok_or_else(|| anyhow!("video stream is missing: {}", path.display()))?;
+    let width = video
+        .width
+        .filter(|value| *value > 0)
+        .ok_or_else(|| anyhow!("video width is missing or invalid: {}", path.display()))?;
+    let height = video
+        .height
+        .filter(|value| *value > 0)
+        .ok_or_else(|| anyhow!("video height is missing or invalid: {}", path.display()))?;
+    let duration = probe
+        .format
+        .and_then(|format| format.duration)
+        .and_then(|duration| duration.parse::<f64>().ok())
+        .filter(|duration| duration.is_finite() && *duration > 0.0)
+        .ok_or_else(|| anyhow!("video duration is missing or invalid: {}", path.display()))?;
+
+    if video.codec_name.as_deref() != Some("h264") {
+        eprintln!(
+            "warning: video {} uses {} instead of h264",
+            path.display(),
+            video.codec_name.as_deref().unwrap_or("an unknown codec")
+        );
+    }
+    for audio in probe
+        .streams
+        .iter()
+        .filter(|stream| stream.codec_type.as_deref() == Some("audio"))
+    {
+        if audio.codec_name.as_deref() != Some("aac") {
+            eprintln!(
+                "warning: video {} uses {} audio instead of aac",
+                path.display(),
+                audio.codec_name.as_deref().unwrap_or("an unknown codec")
+            );
+        }
+    }
+
+    Ok((width, height, (duration * 1000.0).round() as u64))
+}
+
+fn generate_video_thumbnail(source: &Path, dest: &Path, duration_ms: u64) -> Result<()> {
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("create video thumbnail directory: {}", parent.display()))?;
+    }
+    let seq = THUMB_TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let tmp = dest.with_extension(format!("webp.{}.{seq}.tmp", std::process::id()));
+    let seek_seconds = duration_ms as f64 / 10_000.0;
+    let output = ProcessCommand::new(video_tool("MEGUMI_FFMPEG", "ffmpeg"))
+        .args(["-v", "error", "-ss", &format!("{seek_seconds:.3}"), "-i"])
+        .arg(source)
+        .args([
+            "-frames:v",
+            "1",
+            "-vf",
+            "scale=256:-2:flags=lanczos",
+            "-c:v",
+            "libwebp",
+            "-quality",
+            "72",
+            "-f",
+            "webp",
+            "-y",
+        ])
+        .arg(&tmp)
+        .output()
+        .with_context(|| format!("run ffmpeg for {}", source.display()))?;
+    if !output.status.success() {
+        let _ = fs::remove_file(&tmp);
+        bail!(
+            "ffmpeg thumbnail failed for {}: {}",
+            source.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    fs::rename(&tmp, dest).with_context(|| format!("write video thumbnail: {}", dest.display()))?;
+    Ok(())
+}
+
 fn remove_unit_from_memory_state(build_state: &mut BuildState, unit_key: &str) {
     let prefix = format!("{unit_key}/");
     build_state
         .files
-        .retain(|path, _| !path.starts_with(&prefix));
+        .retain(|path, _| path != unit_key && !path.starts_with(&prefix));
     build_state.comics.remove(unit_key);
 }
 
@@ -899,7 +1285,7 @@ fn unit_files(build_state: &BuildState, unit_key: &str) -> Vec<(String, FileStat
     build_state
         .files
         .iter()
-        .filter(|(path, _)| path.starts_with(&prefix))
+        .filter(|(path, _)| path.as_str() == unit_key || path.starts_with(&prefix))
         .map(|(path, state)| (path.clone(), state.clone()))
         .collect()
 }
@@ -913,6 +1299,10 @@ fn assemble_libraries(units: Vec<state::CachedUnit>) -> Result<Vec<LibraryManife
         Books {
             title: String,
             authors: Vec<AuthorManifest>,
+        },
+        Videos {
+            title: String,
+            videos: Vec<VideoManifest>,
         },
     }
 
@@ -934,6 +1324,9 @@ fn assemble_libraries(units: Vec<state::CachedUnit>) -> Result<Vec<LibraryManife
                         match entry.get_mut() {
                             Group::Comics { comics, .. } => comics.push(summary),
                             Group::Books { .. } => bail!("cached library mixes comics and books"),
+                            Group::Videos { .. } => {
+                                bail!("cached library mixes comics and videos")
+                            }
                         }
                     }
                 }
@@ -953,6 +1346,30 @@ fn assemble_libraries(units: Vec<state::CachedUnit>) -> Result<Vec<LibraryManife
                         match entry.get_mut() {
                             Group::Books { authors, .. } => authors.push(author),
                             Group::Comics { .. } => bail!("cached library mixes comics and books"),
+                            Group::Videos { .. } => {
+                                bail!("cached library mixes books and videos")
+                            }
+                        }
+                    }
+                }
+            }
+            state::UnitKind::Video => {
+                let video = unit
+                    .video
+                    .ok_or_else(|| anyhow!("cached video has no summary: {}", unit.key))?;
+                match groups.entry(unit.library_key) {
+                    std::collections::btree_map::Entry::Vacant(entry) => {
+                        entry.insert(Group::Videos {
+                            title: unit.library_title,
+                            videos: vec![video],
+                        });
+                    }
+                    std::collections::btree_map::Entry::Occupied(mut entry) => {
+                        match entry.get_mut() {
+                            Group::Videos { videos, .. } => videos.push(video),
+                            Group::Comics { .. } | Group::Books { .. } => {
+                                bail!("cached library mixes videos with other content")
+                            }
                         }
                     }
                 }
@@ -964,6 +1381,7 @@ fn assemble_libraries(units: Vec<state::CachedUnit>) -> Result<Vec<LibraryManife
         .map(|group| match group {
             Group::Comics { title, comics } => LibraryManifest::Comic { title, comics },
             Group::Books { title, authors } => LibraryManifest::Book { title, authors },
+            Group::Videos { title, videos } => LibraryManifest::Video { title, videos },
         })
         .collect())
 }
@@ -1025,6 +1443,11 @@ fn sync_book_tags(ctx: &BuildContext, path: &Path, key: &str, is_new: bool) -> R
 }
 
 #[cfg(target_os = "macos")]
+fn sync_video_tags(ctx: &BuildContext, path: &Path, key: &str, is_new: bool) -> Result<()> {
+    sync_target_tags(ctx, path, key, is_new, |tags| &tags.videos)
+}
+
+#[cfg(target_os = "macos")]
 fn sync_target_tags(
     ctx: &BuildContext,
     path: &Path,
@@ -1066,6 +1489,11 @@ fn sync_book_tags(_ctx: &BuildContext, _path: &Path, _key: &str, _is_new: bool) 
     Ok(())
 }
 
+#[cfg(not(target_os = "macos"))]
+fn sync_video_tags(_ctx: &BuildContext, _path: &Path, _key: &str, _is_new: bool) -> Result<()> {
+    Ok(())
+}
+
 #[cfg(target_os = "macos")]
 fn desired_local_tags(tags: Option<&FileTags>) -> FileTags {
     let tags = tags.copied().unwrap_or_default();
@@ -1093,6 +1521,13 @@ fn warn_missing_tag_targets(ctx: &BuildContext) {
         .filter(|key| has_extension(Path::new(key), BOOK_EXTENSIONS))
         .map(|key| book_title(Path::new(key)))
         .collect();
+    let video_titles: BTreeSet<_> = ctx
+        .next_state
+        .files
+        .keys()
+        .filter(|key| has_extension(Path::new(key), VIDEO_EXTENSIONS))
+        .map(|key| book_title(Path::new(key)))
+        .collect();
     let mut missing = Vec::new();
 
     for (key, file_tags) in &tags.comics {
@@ -1103,6 +1538,11 @@ fn warn_missing_tag_targets(ctx: &BuildContext) {
     for (key, file_tags) in &tags.books {
         if has_active_remote_tag(file_tags) && !book_titles.contains(key) {
             missing.push(format!("book:{key}"));
+        }
+    }
+    for (key, file_tags) in &tags.videos {
+        if has_active_remote_tag(file_tags) && !video_titles.contains(key) {
+            missing.push(format!("video:{key}"));
         }
     }
     for (key, file_tags) in &tags.images {
@@ -1517,12 +1957,14 @@ struct DirectoryContents {
     directories: Vec<PathBuf>,
     images: Vec<PathBuf>,
     books: Vec<PathBuf>,
+    videos: Vec<PathBuf>,
 }
 
 fn inspect_directory(path: &Path) -> Result<DirectoryContents> {
     let mut directories = Vec::new();
     let mut images = Vec::new();
     let mut books = Vec::new();
+    let mut videos = Vec::new();
     for entry in
         fs::read_dir(path).with_context(|| format!("read directory: {}", path.display()))?
     {
@@ -1539,16 +1981,20 @@ fn inspect_directory(path: &Path) -> Result<DirectoryContents> {
                 images.push(child);
             } else if has_extension(&child, BOOK_EXTENSIONS) {
                 books.push(child);
+            } else if has_extension(&child, VIDEO_EXTENSIONS) {
+                videos.push(child);
             }
         }
     }
     directories.sort_by(|a, b| compare_path_names(a, b));
     images.sort_by(|a, b| compare_path_names(a, b));
     books.sort_by(|a, b| compare_path_names(a, b));
+    videos.sort_by(|a, b| compare_path_names(a, b));
     Ok(DirectoryContents {
         directories,
         images,
         books,
+        videos,
     })
 }
 
@@ -1773,7 +2219,10 @@ fn cleanup_orphaned_outputs(ctx: &BuildContext) -> Result<()> {
         .next_state
         .files
         .keys()
-        .filter(|source_key| has_extension(Path::new(source_key), IMAGE_EXTENSIONS))
+        .filter(|source_key| {
+            has_extension(Path::new(source_key), IMAGE_EXTENSIONS)
+                || has_extension(Path::new(source_key), VIDEO_EXTENSIONS)
+        })
         .map(|source_key| thumbnail_key_for(source_key))
         .collect();
     for key in managed_files(&ctx.output, THUMBNAIL_DIR)? {
@@ -2048,6 +2497,50 @@ mod tests {
         RgbImage::from_pixel(20, 30, Rgb(color)).save(path).unwrap();
     }
 
+    #[test]
+    fn discovers_flat_mp4_files_as_video_units() {
+        let temp = TestDir::new();
+        let video = temp.0.join("Videos/Clip.MP4");
+        fs::create_dir_all(video.parent().unwrap()).unwrap();
+        fs::write(&video, b"not needed during discovery").unwrap();
+
+        let discovery = discover_units(&temp.0, &BTreeMap::new(), &BTreeSet::new(), true).unwrap();
+
+        assert_eq!(discovery.work.len(), 1);
+        assert_eq!(discovery.work[0].key(), "Videos/Clip.MP4");
+        assert!(matches!(discovery.work[0], UnitWork::Video { .. }));
+    }
+
+    #[test]
+    fn rejects_video_libraries_mixed_with_other_content() {
+        let temp = TestDir::new();
+        fs::create_dir_all(temp.0.join("Mixed/Comic")).unwrap();
+        fs::write(temp.0.join("Mixed/Clip.mp4"), b"video").unwrap();
+        write_test_image(&temp.0.join("Mixed/Comic/001.jpg"), [1, 2, 3]);
+
+        let result = discover_units(&temp.0, &BTreeMap::new(), &BTreeSet::new(), true);
+        assert!(result.is_err());
+        let error = result.err().unwrap().to_string();
+
+        assert!(error.contains("mixes video files with other content"));
+    }
+
+    #[test]
+    fn parses_video_dimensions_duration_and_browser_codecs() {
+        let output = br#"{
+          "streams": [
+            {"codec_type":"video","codec_name":"h264","width":1920,"height":1080},
+            {"codec_type":"audio","codec_name":"aac"}
+          ],
+          "format":{"duration":"12.345"}
+        }"#;
+
+        assert_eq!(
+            parse_video_probe(output, Path::new("Clip.mp4")).unwrap(),
+            (1920, 1080, 12_345)
+        );
+    }
+
     #[cfg(target_os = "macos")]
     fn write_tags_json(source: &Path, value: serde_json::Value) {
         let path = source.join(TAGS_FILE);
@@ -2185,6 +2678,55 @@ mod tests {
         assert!(database.load_units().unwrap().is_empty());
         assert!(!source.join("manifests/Comics/One.json").exists());
         assert!(!source.join("thumbnail/Comics/One/001.webp").exists());
+    }
+
+    #[test]
+    fn removed_books_are_pruned_without_an_event_hint() {
+        let temp = TestDir::new();
+        let source = &temp.0;
+        let first_book = source.join("Books/Author/One.txt");
+        let second_book = source.join("Books/Author/Two.txt");
+        fs::create_dir_all(first_book.parent().unwrap()).unwrap();
+        fs::write(&first_book, "第一章 开始\nfirst").unwrap();
+        fs::write(&second_book, "第一章 开始\nsecond").unwrap();
+        build_test_library(source);
+        assert!(source.join("manifests/Books/Author/One.json").is_file());
+        assert!(source.join("manifests/Books/Author/Two.json").is_file());
+
+        fs::remove_file(&first_book).unwrap();
+        let mut database = state::StateDb::open(source).unwrap();
+        database.record_full_scan(state::now_ms().unwrap()).unwrap();
+        database
+            .set_event_cursor(fsevents::current_cursor())
+            .unwrap();
+        drop(database);
+        build_test_library(source);
+
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(source.join(MANIFEST_FILE)).unwrap()).unwrap();
+        let books = manifest["libraries"][0]["authors"][0]["books"]
+            .as_array()
+            .unwrap();
+        assert_eq!(books.len(), 1);
+        assert_eq!(books[0]["key"], "Books/Author/Two.txt");
+        assert!(!source.join("manifests/Books/Author/One.json").exists());
+        assert!(source.join("manifests/Books/Author/Two.json").is_file());
+
+        fs::remove_dir_all(second_book.parent().unwrap()).unwrap();
+        let mut database = state::StateDb::open(source).unwrap();
+        database.record_full_scan(state::now_ms().unwrap()).unwrap();
+        database
+            .set_event_cursor(fsevents::current_cursor())
+            .unwrap();
+        drop(database);
+        build_test_library(source);
+
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(source.join(MANIFEST_FILE)).unwrap()).unwrap();
+        assert!(manifest["libraries"].as_array().unwrap().is_empty());
+        let database = state::StateDb::open(source).unwrap();
+        assert!(database.load_units().unwrap().is_empty());
+        assert!(!source.join("manifests/Books/Author/Two.json").exists());
     }
 
     #[cfg(target_os = "macos")]
@@ -2473,7 +3015,10 @@ mod tests {
 
         let mut database = state::StateDb::open(source).unwrap();
         database
-            .enqueue_changes(&["Comics/.DS_Store".to_string()], fsevents::current_cursor())
+            .enqueue_changes(
+                &["Comics/.DS_Store".to_string()],
+                fsevents::current_cursor(),
+            )
             .unwrap();
         assert_eq!(
             database.dirty_units().unwrap(),

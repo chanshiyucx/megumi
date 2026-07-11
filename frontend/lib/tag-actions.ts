@@ -1,7 +1,7 @@
 import { chapterTagId, patchRemoteTags, type RemoteTags } from '@/lib/tags'
 import type { FileTags } from '@/types/library'
 
-type RemoteTagTargetType = 'comic' | 'book' | 'image' | 'chapter'
+type RemoteTagTargetType = 'comic' | 'book' | 'video' | 'image' | 'chapter'
 
 interface RemoteTagTarget {
   targetType: RemoteTagTargetType
@@ -28,6 +28,10 @@ export function comicTagTarget(comic: { title: string }): RemoteTagTarget {
 
 export function bookTagTarget(book: { title: string }): RemoteTagTarget {
   return { targetType: 'book', targetId: book.title }
+}
+
+export function videoTagTarget(video: { title: string }): RemoteTagTarget {
+  return { targetType: 'video', targetId: video.title }
 }
 
 export function imageTagTarget(imageKey: string): RemoteTagTarget {
@@ -95,6 +99,8 @@ function tagBucket(remoteTags: RemoteTags, target: RemoteTagTarget) {
       return remoteTags.comics
     case 'book':
       return remoteTags.books
+    case 'video':
+      return remoteTags.videos
     case 'image':
       return remoteTags.images
     case 'chapter':

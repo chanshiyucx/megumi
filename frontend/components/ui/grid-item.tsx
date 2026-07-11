@@ -12,6 +12,7 @@ interface GridItemProps {
   deleted: boolean
   isSelected?: boolean
   progress?: ComicProgress
+  duration?: string
   // When set, a tap reveals both tag buttons and the title (centred at the
   // bottom) instead of running onClick; tapping again hides them. Active tags
   // stay shown either way. Used for page thumbnails; covers/TOC select on tap.
@@ -31,6 +32,7 @@ export function GridItem({
   deleted,
   isSelected,
   progress,
+  duration,
   tagOnTap,
   onClick,
   onDoubleClick,
@@ -72,6 +74,12 @@ export function GridItem({
         onDelete={onDelete}
         onClose={close}
       />
+
+      {duration && !open && (
+        <span className="absolute right-2 bottom-2 rounded-sm bg-black/75 px-1.5 py-0.5 text-xs text-white">
+          {duration}
+        </span>
+      )}
 
       {progress && progress.total > 0 && (
         <div className="absolute inset-x-0 bottom-0 flex justify-between overflow-hidden bg-linear-to-t from-black/80 via-black/40 to-transparent p-2 text-xs text-white">

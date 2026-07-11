@@ -4,6 +4,7 @@ import { useUIStore } from '@/store/ui'
 import { LibraryType } from '@/types/library'
 import { BookLibrary } from './book-library'
 import { ComicLibrary } from './comic-library'
+import { VideoLibrary } from './video-library'
 
 export function LibraryArea() {
   const selectedLibraryId = useUIStore((s) => s.selectedLibraryId)
@@ -24,8 +25,10 @@ export function LibraryArea() {
     >
       {selectedLibrary.type === LibraryType.book ? (
         <BookLibrary selectedLibrary={selectedLibrary} />
-      ) : (
+      ) : selectedLibrary.type === LibraryType.comic ? (
         <ComicLibrary selectedLibrary={selectedLibrary} />
+      ) : (
+        <VideoLibrary selectedLibrary={selectedLibrary} />
       )}
     </main>
   )

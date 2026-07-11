@@ -6,15 +6,19 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result, anyhow, bail};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
-use crate::{AuthorManifest, BuildState, ComicState, ComicSummaryManifest, FileState, RemoteTags};
+use crate::{
+    AuthorManifest, BuildState, ComicState, ComicSummaryManifest, FileState, RemoteTags,
+    VideoManifest,
+};
 
 const DATABASE_FILE: &str = ".megumi/state.sqlite3";
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnitKind {
     Comic,
     Author,
+    Video,
 }
 
 impl UnitKind {
@@ -22,6 +26,7 @@ impl UnitKind {
         match self {
             Self::Comic => "comic",
             Self::Author => "author",
+            Self::Video => "video",
         }
     }
 
@@ -29,6 +34,7 @@ impl UnitKind {
         match value {
             "comic" => Ok(Self::Comic),
             "author" => Ok(Self::Author),
+            "video" => Ok(Self::Video),
             _ => bail!("unknown cached unit kind: {value}"),
         }
     }
@@ -43,6 +49,7 @@ pub struct CachedUnit {
     pub kind: UnitKind,
     pub comic: Option<ComicSummaryManifest>,
     pub author: Option<AuthorManifest>,
+    pub video: Option<VideoManifest>,
 }
 
 pub struct UnitIdentity<'a> {
@@ -62,6 +69,12 @@ pub struct ComicCommit<'a> {
 pub struct AuthorCommit<'a> {
     pub unit: UnitIdentity<'a>,
     pub author: &'a AuthorManifest,
+    pub files: &'a [(String, FileState)],
+}
+
+pub struct VideoCommit<'a> {
+    pub unit: UnitIdentity<'a>,
+    pub video: &'a VideoManifest,
     pub files: &'a [(String, FileState)],
 }
 
@@ -270,12 +283,13 @@ impl StateDb {
         for row in rows {
             let (key, library_key, library_title, title, kind, result_json) = row?;
             let kind = UnitKind::parse(&kind)?;
-            let (comic, author) = match kind {
+            let (comic, author, video) = match kind {
                 UnitKind::Comic => (
                     Some(
                         serde_json::from_str(&result_json)
                             .with_context(|| format!("parse cached comic summary for {key}"))?,
                     ),
+                    None,
                     None,
                 ),
                 UnitKind::Author => (
@@ -283,6 +297,15 @@ impl StateDb {
                     Some(
                         serde_json::from_str(&result_json)
                             .with_context(|| format!("parse cached author summary for {key}"))?,
+                    ),
+                    None,
+                ),
+                UnitKind::Video => (
+                    None,
+                    None,
+                    Some(
+                        serde_json::from_str(&result_json)
+                            .with_context(|| format!("parse cached video summary for {key}"))?,
                     ),
                 ),
             };
@@ -294,6 +317,7 @@ impl StateDb {
                 kind,
                 comic,
                 author,
+                video,
             });
         }
         Ok(units)
@@ -338,6 +362,25 @@ impl StateDb {
             unit.title,
             UnitKind::Author,
             &serde_json::to_string(commit.author)?,
+        )?;
+        replace_unit_files(&transaction, unit.key, commit.files)?;
+        transaction.execute("DELETE FROM comics WHERE unit_key = ?1", [unit.key])?;
+        transaction.execute("DELETE FROM dirty_units WHERE unit_key = ?1", [unit.key])?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn save_video(&mut self, commit: VideoCommit<'_>) -> Result<()> {
+        let unit = commit.unit;
+        let transaction = self.connection.transaction()?;
+        upsert_unit(
+            &transaction,
+            unit.key,
+            unit.library_key,
+            unit.library_title,
+            unit.title,
+            UnitKind::Video,
+            &serde_json::to_string(commit.video)?,
         )?;
         replace_unit_files(&transaction, unit.key, commit.files)?;
         transaction.execute("DELETE FROM comics WHERE unit_key = ?1", [unit.key])?;
@@ -434,7 +477,7 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
              library_key TEXT NOT NULL,
              library_title TEXT NOT NULL,
              title TEXT NOT NULL,
-             kind TEXT NOT NULL CHECK(kind IN ('comic', 'author')),
+             kind TEXT NOT NULL CHECK(kind IN ('comic', 'author', 'video')),
              result_json TEXT
          );
          CREATE TABLE IF NOT EXISTS files(
@@ -621,6 +664,58 @@ mod tests {
         assert!(db.load_units().unwrap().is_empty());
         assert!(state.files.is_empty());
         assert!(state.comics.is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn commits_a_video_file_as_one_unit() {
+        let root =
+            std::env::temp_dir().join(format!("megumi-state-test-{}-video", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let mut db = StateDb::open(&root).unwrap();
+        let video = VideoManifest {
+            title: "Clip".into(),
+            key: "Videos/Clip.mp4".into(),
+            cover_key: "thumbnail/Videos/Clip.webp".into(),
+            mtime_ms: 2,
+            size: 100,
+            width: 1920,
+            height: 1080,
+            duration_ms: 5_000,
+        };
+        let files = [(
+            video.key.clone(),
+            FileState {
+                size: video.size,
+                mtime_ms: video.mtime_ms,
+                width: Some(video.width),
+                height: Some(video.height),
+            },
+        )];
+
+        db.save_video(VideoCommit {
+            unit: UnitIdentity {
+                key: &video.key,
+                library_key: "Videos",
+                library_title: "Videos",
+                title: &video.title,
+            },
+            video: &video,
+            files: &files,
+        })
+        .unwrap();
+
+        let units = db.load_units().unwrap();
+        assert_eq!(units.len(), 1);
+        assert_eq!(units[0].kind, UnitKind::Video);
+        assert_eq!(units[0].video.as_ref().unwrap().duration_ms, 5_000);
+        assert!(
+            db.load_build_state()
+                .unwrap()
+                .files
+                .contains_key(&video.key)
+        );
         let _ = fs::remove_dir_all(root);
     }
 }

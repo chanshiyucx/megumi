@@ -1,4 +1,4 @@
-type TagTargetType = 'comic' | 'book' | 'image' | 'chapter'
+type TagTargetType = 'comic' | 'book' | 'video' | 'image' | 'chapter'
 
 interface Env {
   MEGUMI_BUCKET: R2Bucket
@@ -14,6 +14,7 @@ interface RemoteTags {
   version: 1
   comics: Record<string, FileTags>
   books: Record<string, FileTags>
+  videos: Record<string, FileTags>
   images: Record<string, FileTags>
   chapters: Record<string, FileTags>
   updatedAt?: string
@@ -35,16 +36,18 @@ const EMPTY_TAGS: RemoteTags = {
   version: 1,
   comics: {},
   books: {},
+  videos: {},
   images: {},
   chapters: {},
 }
 
 const TARGET_COLLECTIONS: Record<
   TagTargetType,
-  keyof Pick<RemoteTags, 'comics' | 'books' | 'images' | 'chapters'>
+  keyof Pick<RemoteTags, 'comics' | 'books' | 'videos' | 'images' | 'chapters'>
 > = {
   comic: 'comics',
   book: 'books',
+  video: 'videos',
   image: 'images',
   chapter: 'chapters',
 }
@@ -89,6 +92,7 @@ function emptyTags(): RemoteTags {
     version: 1,
     comics: {},
     books: {},
+    videos: {},
     images: {},
     chapters: {},
   }
@@ -101,6 +105,7 @@ function normalizeTags(value: unknown): RemoteTags {
     version: 1,
     comics: normalizeCollection(source.comics),
     books: normalizeCollection(source.books),
+    videos: normalizeCollection(source.videos),
     images: normalizeCollection(source.images),
     chapters: normalizeCollection(source.chapters),
     updatedAt:
@@ -165,6 +170,7 @@ function parsePatchRequest(value: unknown): PatchTagsRequest | null {
   if (
     source.targetType !== 'comic' &&
     source.targetType !== 'book' &&
+    source.targetType !== 'video' &&
     source.targetType !== 'image' &&
     source.targetType !== 'chapter'
   ) {

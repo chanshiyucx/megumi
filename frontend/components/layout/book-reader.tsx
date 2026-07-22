@@ -128,7 +128,7 @@ function VirtualBook({
   }, [lines])
 
   return (
-    <div className="relative min-h-0 flex-1">
+    <div className="relative min-h-0 flex-1 select-text! [-webkit-touch-callout:default] [&_*]:select-text! [&_*]:[-webkit-touch-callout:default]">
       {hasCurrentEstimates ? (
         <Virtuoso
           key={estimation.width}

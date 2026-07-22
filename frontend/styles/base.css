@@ -6,11 +6,29 @@
   *,
   ::after,
   ::before {
-    @apply border-overlay select-none!;
-    /* Drop the grey highlight mobile browsers flash over tapped elements and
-     * the iOS tap-and-hold save/callout menu, for a native-app feel. */
+    @apply border-overlay;
+    /* Drop the grey highlight mobile browsers flash over tapped elements. */
     -webkit-tap-highlight-color: transparent;
+  }
+
+  /* Keep the app chrome non-selectable without placing user-select: none on
+   * the book content or any of its ancestors. Mobile Safari can otherwise
+   * refuse to start a text selection inside the reader. */
+  *:not(
+    .book-reader-content,
+    .book-reader-content *,
+    :has(.book-reader-content)
+  ),
+  ::after,
+  ::before {
+    @apply select-none!;
     -webkit-touch-callout: none;
+  }
+
+  .book-reader-content,
+  .book-reader-content * {
+    @apply select-text!;
+    -webkit-touch-callout: default;
   }
 
   html,

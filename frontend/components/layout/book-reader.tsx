@@ -24,7 +24,7 @@ const RESIZE_ESTIMATE_DELAY_MS = 120
 
 function BookLine({ line }: { line: string }) {
   return (
-    <p className="text-text mx-auto w-full px-4 pb-4 font-serif leading-relaxed wrap-break-word whitespace-pre-wrap select-text!">
+    <p className="text-text mx-auto w-full px-4 pb-4 font-serif leading-relaxed wrap-break-word whitespace-pre-wrap">
       {line}
     </p>
   )
@@ -128,7 +128,7 @@ function VirtualBook({
   }, [lines])
 
   return (
-    <div className="relative min-h-0 flex-1 select-text! [-webkit-touch-callout:default] [&_*]:select-text! [&_*]:[-webkit-touch-callout:default]">
+    <div className="book-reader-content relative min-h-0 flex-1">
       {hasCurrentEstimates ? (
         <Virtuoso
           key={estimation.width}

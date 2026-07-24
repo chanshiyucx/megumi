@@ -9,12 +9,10 @@ STATE_DIR="$LOCAL/.megumi"
 SYNC_STATE="$STATE_DIR/r2-sync.state.json"
 CUTOFF_MARKER="$STATE_DIR/r2-sync.cutoff"
 
+# Fast mode tracks local changes so it does not need to list the large R2 bucket.
 COMMON_FLAGS=(
   --progress
-  --exclude ".megumi/tags.json"
-  --exclude ".megumi/state.sqlite3*"
-  --exclude ".megumi/build.lock"
-  --exclude ".megumi/r2-sync.*"
+  --exclude ".megumi/**"
   --exclude ".DS_Store"
   --log-file="$LOG"
   --log-level INFO
@@ -61,7 +59,6 @@ write_sync_state() {
   } > "$tmp_state"
 
   mv "$tmp_state" "$SYNC_STATE"
-  touch -t "$(date -r "$epoch" '+%Y%m%d%H%M.%S')" "$CUTOFF_MARKER"
 }
 
 prepare_cutoff_marker() {
@@ -78,22 +75,18 @@ write_changed_files() {
     set -o pipefail
     cd "$LOCAL" || exit 1
     find . -type f -cnewer "$CUTOFF_MARKER" \
-      ! -path "./.megumi/tags.json" \
-      ! -path "./.megumi/state.json" \
-      ! -path "./.megumi/state.sqlite3*" \
-      ! -path "./.megumi/build.lock" \
-      ! -path "./.megumi/r2-sync.*" \
+      ! -path "./.megumi/*" \
       ! -name ".DS_Store" \
       -print | sed 's#^\./##'
   ) > "$changed_list"
 }
 
 case "$MODE" in
-  fast|full|mark)
+  fast|full)
     ;;
   *)
     echo "❌ 未知模式: $MODE"
-    echo "   用法: $0 [fast|full|mark]"
+    echo "   用法: $0 [fast|full]"
     exit 1
     ;;
 esac
@@ -101,7 +94,7 @@ esac
 # 检查本地路径是否存在（防止硬盘未挂载时误删 R2 文件）
 if [ ! -d "$LOCAL" ]; then
   echo "❌ 本地路径不存在: $LOCAL"
-  echo "   请确认硬盘 T7 已连接并挂载"
+  echo "   请确认硬盘已连接并挂载"
   exit 1
 fi
 
@@ -131,7 +124,6 @@ case "$MODE" in
             "${COMMON_FLAGS[@]}" \
             --checkers 16 \
             --no-traverse \
-            --ignore-times \
             --files-from-raw "$changed_list"
           resource_status=$?
         fi
@@ -158,21 +150,12 @@ case "$MODE" in
       --fast-list
     resource_status=$?
     ;;
-  mark)
-    echo "   模式: mark"
-    echo "   说明: 仅记录当前资源已同步状态；不访问 R2"
-    resource_status=0
-    ;;
 esac
 
 if [ $resource_status -eq 0 ]; then
   if write_sync_state "$MODE" "$sync_start_epoch"; then
-    if [ "$MODE" = "mark" ]; then
-      tags_status=0
-    else
-      sync_tags_to_local
-      tags_status=$?
-    fi
+    sync_tags_to_local
+    tags_status=$?
   else
     echo "❌ 写入同步状态失败: $SYNC_STATE"
     resource_status=1

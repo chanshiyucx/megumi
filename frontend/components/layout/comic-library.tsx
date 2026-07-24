@@ -106,12 +106,6 @@ export function ComicLibrary({ selectedLibrary }: ComicLibraryProps) {
     openReader()
   }
 
-  // Closing the preview syncs the reading position to the page the user flipped
-  // to, scrolling the strip there when scroll mode is showing.
-  const handlePreviewClose = () => {
-    closePreview()
-  }
-
   const pageStatusText = (() => {
     if (!comic) return ''
     if (images.length) return `${currentIndex + 1} / ${images.length}`
@@ -244,7 +238,7 @@ export function ComicLibrary({ selectedLibrary }: ComicLibraryProps) {
         active={previewActive}
         index={previewIndex}
         onIndexChange={setPreviewIndex}
-        onClose={handlePreviewClose}
+        onClose={closePreview}
         onTags={updateComicImageTags}
       />
     </div>

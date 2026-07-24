@@ -15,7 +15,7 @@ import { useComicReadingSession } from '@/hooks/use-comic-reading-session'
 import { useIsPhone } from '@/hooks/use-is-phone'
 import { cn } from '@/lib/style'
 import { useUIStore } from '@/store/ui'
-import type { ComicImageStatus, FileTags, Image } from '@/types/library'
+import type { ComicImageStatus, Image } from '@/types/library'
 
 interface TableOfContentsProps {
   comicId: string
@@ -24,7 +24,6 @@ interface TableOfContentsProps {
   isCollapsed: boolean
   renderImages: boolean
   onSelect: (index: number) => void
-  onTags: (id: string, imageKey: string, tags: FileTags) => Promise<void>
   onClose: () => void
   onTransitionEnd: (e: TransitionEvent<HTMLDivElement>) => void
 }
@@ -36,7 +35,6 @@ function TableOfContents({
   isCollapsed,
   renderImages,
   onSelect,
-  onTags,
   onClose,
   onTransitionEnd,
 }: TableOfContentsProps) {
@@ -84,7 +82,6 @@ function TableOfContents({
                 onClick={() => {
                   onSelect(img.index)
                 }}
-                onTags={onTags}
               />
             </div>
           ))}
@@ -157,12 +154,6 @@ export function ComicReader({ comicId }: ComicReaderProps) {
     if (isTocCollapsed) setRenderTocImages(false)
   }
 
-  // Closing the preview syncs the scroll position to whatever page the user
-  // flipped to, so the strip lands where they left off.
-  const handlePreviewClose = () => {
-    closePreview()
-  }
-
   if (!comic) return null
 
   if (!images.length) {
@@ -192,10 +183,7 @@ export function ComicReader({ comicId }: ComicReaderProps) {
         currentIndex={currentIndex}
         isCollapsed={isTocCollapsed}
         renderImages={renderTocImages}
-        onSelect={(index) => {
-          jumpTo(index)
-        }}
-        onTags={updateComicImageTags}
+        onSelect={jumpTo}
         onClose={handleCloseToc}
         onTransitionEnd={handleTocTransitionEnd}
       />
@@ -271,7 +259,7 @@ export function ComicReader({ comicId }: ComicReaderProps) {
         active={previewActive}
         index={previewIndex}
         onIndexChange={setPreviewIndex}
-        onClose={handlePreviewClose}
+        onClose={closePreview}
         onTags={updateComicImageTags}
       />
     </div>

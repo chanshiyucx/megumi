@@ -1,4 +1,18 @@
 import {
+  closestCenter,
+  DndContext,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from '@dnd-kit/core'
+import { restrictToHorizontalAxis } from '@dnd-kit/modifiers'
+import {
+  horizontalListSortingStrategy,
+  SortableContext,
+  useSortable,
+} from '@dnd-kit/sortable'
+import {
   Columns2,
   InspectionPanel,
   PanelLeft,
@@ -13,6 +27,8 @@ import { cn } from '@/lib/style'
 import { useTabsStore, type Tab } from '@/store/tabs'
 import { useUIStore } from '@/store/ui'
 
+const POINTER_SENSOR_OPTIONS = { activationConstraint: { distance: 8 } }
+
 interface TabItemProps {
   tab: Tab
   isActive: boolean
@@ -21,11 +37,32 @@ interface TabItemProps {
 }
 
 function TabItem({ tab, isActive, onSelect, onRemove }: TabItemProps) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: tab.id })
+
+  const style = {
+    transform: transform
+      ? `translate3d(${transform.x}px, ${transform.y}px, 0)`
+      : undefined,
+    transition,
+  }
+
   return (
     <div
+      ref={setNodeRef}
+      style={style}
+      {...attributes}
+      {...listeners}
       className={cn(
-        'bg-surface hover:bg-overlay group flex max-w-50 min-w-37.5 cursor-pointer items-center gap-2 rounded-sm px-3 py-1 text-sm',
+        'bg-surface hover:bg-overlay group flex max-w-50 min-w-37.5 cursor-grab items-center gap-2 rounded-sm px-3 py-1 text-sm',
         isActive && 'bg-overlay text-love',
+        isDragging && 'z-10 cursor-grabbing opacity-80',
       )}
       onClick={() => {
         onSelect(tab.id)
@@ -34,6 +71,9 @@ function TabItem({ tab, isActive, onSelect, onRemove }: TabItemProps) {
       <span className="flex-1 truncate">{tab.title}</span>
       <Button
         className="h-4 w-4 bg-transparent opacity-0 group-hover:opacity-100"
+        onPointerDown={(e) => {
+          e.stopPropagation()
+        }}
         onClick={(e) => {
           e.stopPropagation()
           onRemove(tab.id)
@@ -54,7 +94,9 @@ export function TabNav() {
   const tabs = useTabsStore((s) => s.tabs)
   const activeTab = useTabsStore((s) => s.activeTab)
   const removeTab = useTabsStore((s) => s.removeTab)
+  const reorderTab = useTabsStore((s) => s.reorderTab)
   const setActiveTab = useTabsStore((s) => s.setActiveTab)
+  const sensors = useSensors(useSensor(PointerSensor, POINTER_SENSOR_OPTIONS))
 
   const handleSidebar = () => {
     if (activeTab) setActiveTab('')
@@ -63,6 +105,13 @@ export function TabNav() {
   const handleMiddle = () => {
     if (activeTab) setActiveTab('')
     else toggleMiddle()
+  }
+
+  const handleDragEnd = (event: DragEndEvent) => {
+    const { active, over } = event
+    if (!over || active.id === over.id) return
+
+    reorderTab(active.id as string, over.id as string)
   }
 
   const navigateTab = (direction: 1 | -1) => {
@@ -151,15 +200,27 @@ export function TabNav() {
         viewportClassName="flex-1"
         className="flex items-center gap-1"
       >
-        {tabs.map((tab) => (
-          <TabItem
-            key={tab.id}
-            tab={tab}
-            isActive={activeTab === tab.id}
-            onSelect={setActiveTab}
-            onRemove={removeTab}
-          />
-        ))}
+        <DndContext
+          sensors={sensors}
+          collisionDetection={closestCenter}
+          modifiers={[restrictToHorizontalAxis]}
+          onDragEnd={handleDragEnd}
+        >
+          <SortableContext
+            items={tabs.map((tab) => tab.id)}
+            strategy={horizontalListSortingStrategy}
+          >
+            {tabs.map((tab) => (
+              <TabItem
+                key={tab.id}
+                tab={tab}
+                isActive={activeTab === tab.id}
+                onSelect={setActiveTab}
+                onRemove={removeTab}
+              />
+            ))}
+          </SortableContext>
+        </DndContext>
       </ScrollArea>
     </div>
   )

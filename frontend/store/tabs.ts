@@ -14,6 +14,7 @@ interface TabsState {
   activeTab: string
   addTab: (tab: Tab) => void
   removeTab: (tabId: string) => void
+  reorderTab: (tabId: string, overTabId: string) => void
   setActiveTab: (tabId: string) => void
 }
 
@@ -43,6 +44,15 @@ export const useTabsStore = create<TabsState>()(
               state.tabs[index + 1]?.id ?? state.tabs[index - 1]?.id ?? ''
           }
           state.tabs.splice(index, 1)
+        }),
+      reorderTab: (tabId, overTabId) =>
+        set((state) => {
+          const oldIndex = state.tabs.findIndex((tab) => tab.id === tabId)
+          const newIndex = state.tabs.findIndex((tab) => tab.id === overTabId)
+          if (oldIndex === -1 || newIndex === -1 || oldIndex === newIndex) return
+
+          const [tab] = state.tabs.splice(oldIndex, 1)
+          state.tabs.splice(newIndex, 0, tab)
         }),
       setActiveTab: (tabId) => set({ activeTab: tabId }),
     })),

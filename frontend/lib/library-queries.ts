@@ -1,4 +1,14 @@
-import type { Book, Comic, Video } from '@/types/library'
+import type {
+  Book,
+  Comic,
+  ComicLibrarySortMode,
+  Video,
+} from '@/types/library'
+
+const titleCollator = new Intl.Collator(undefined, {
+  numeric: true,
+  sensitivity: 'base',
+})
 
 interface TaggedItem {
   starred: boolean
@@ -30,14 +40,31 @@ function compareTagPriority(a: TaggedItem, b: TaggedItem) {
   return 0
 }
 
+function compareComicOrder(
+  a: Comic,
+  b: Comic,
+  sortMode: ComicLibrarySortMode,
+) {
+  const tagPriority = compareTagPriority(a, b)
+  if (tagPriority !== 0) return tagPriority
+
+  if (sortMode !== 'title' && a.createdAtMs !== b.createdAtMs) {
+    const createdOrder = a.createdAtMs < b.createdAtMs ? -1 : 1
+    return sortMode === 'created-asc' ? createdOrder : -createdOrder
+  }
+
+  return titleCollator.compare(a.title, b.title)
+}
+
 export function selectOrderedComicsForLibrary(
   state: ComicCollectionState,
   libraryId: string,
+  sortMode: ComicLibrarySortMode,
 ) {
   return (state.libraryComics[libraryId] ?? [])
     .map((id) => state.comics[id])
     .filter(exists)
-    .toSorted(compareTagPriority)
+    .toSorted((a, b) => compareComicOrder(a, b, sortMode))
 }
 
 export function selectOrderedBooksForAuthor(

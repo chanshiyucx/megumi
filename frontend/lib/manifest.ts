@@ -13,11 +13,12 @@ interface ComicSummaryManifest {
   title: string
   coverKey: string
   coverMtimeMs: number
+  createdAtMs: number
   detailVersion: string
 }
 
 interface ComicManifest {
-  schemaVersion: 5
+  schemaVersion: 6
   title: string
   pages: PageManifest[]
 }
@@ -34,7 +35,7 @@ interface ChapterManifest {
 }
 
 interface BookDetailManifest {
-  schemaVersion: 5
+  schemaVersion: 6
   title: string
   lineCount: number
   chapters: ChapterManifest[]
@@ -74,7 +75,7 @@ type LibraryManifest =
     }
 
 interface Manifest {
-  schemaVersion: 5
+  schemaVersion: 6
   generatedAt: string
   libraries: LibraryManifest[]
 }
@@ -211,6 +212,7 @@ export async function fetchRemoteCatalog({
             sourceComic.coverMtimeMs,
           ),
           libraryId,
+          createdAtMs: sourceComic.createdAtMs,
           starred: Boolean(comicTags.starred),
           deleted: Boolean(comicTags.deleted),
         })

@@ -12,7 +12,7 @@ use crate::{
 };
 
 const DATABASE_FILE: &str = ".megumi/state.sqlite3";
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnitKind {
@@ -586,6 +586,7 @@ mod tests {
             title: "One".into(),
             cover_key: "thumbnail/Comics/One/001.webp".into(),
             cover_mtime_ms: 1,
+            created_at_ms: 1,
             detail_version: "abc".into(),
         };
         let comic = ComicState {
@@ -630,6 +631,7 @@ mod tests {
             title: "One".into(),
             cover_key: "thumbnail/Comics/One/001.webp".into(),
             cover_mtime_ms: 1,
+            created_at_ms: 1,
             detail_version: "abc".into(),
         };
         let comic = ComicState {

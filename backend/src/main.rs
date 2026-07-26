@@ -25,7 +25,7 @@ const COMIC_MANIFEST_DIR: &str = "manifests";
 const TAGS_FILE: &str = ".megumi/tags.json";
 const BUILD_LOCK_FILE: &str = ".megumi/build.lock";
 const THUMBNAIL_DIR: &str = "thumbnail";
-const SCHEMA_VERSION: u32 = 5;
+const SCHEMA_VERSION: u32 = 6;
 const THUMBNAIL_WIDTH: u32 = 256;
 const THUMBNAIL_QUALITY: u8 = 72;
 const IMAGE_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png"];
@@ -123,6 +123,7 @@ struct ComicSummaryManifest {
     title: String,
     cover_key: String,
     cover_mtime_ms: u64,
+    created_at_ms: u64,
     detail_version: String,
 }
 
@@ -1674,6 +1675,7 @@ fn build_comic(
         bail!("comic has no readable pages: {}", path.display());
     }
 
+    let created_at_ms = created_ms(&path.metadata()?)?;
     let cover_key = pages[0].thumbnail_key.clone();
     let cover_mtime_ms = pages[0].mtime_ms;
     let detail_key = detail_manifest_key_for(&rel);
@@ -1699,6 +1701,7 @@ fn build_comic(
         title,
         cover_key,
         cover_mtime_ms,
+        created_at_ms,
         detail_version,
     })
 }
@@ -2382,6 +2385,16 @@ fn modified_ms(metadata: &fs::Metadata) -> Result<u64> {
         .unwrap_or(u64::MAX))
 }
 
+fn created_ms(metadata: &fs::Metadata) -> Result<u64> {
+    Ok(metadata
+        .created()?
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX))
+}
+
 fn thumbnail_key_for(rel: &str) -> String {
     let mut path = PathBuf::from(THUMBNAIL_DIR);
     path.push(rel);
@@ -2938,7 +2951,10 @@ mod tests {
         assert!(comics.get("id").is_none());
         assert!(comics["comics"][0].get("id").is_none());
         assert!(comics["comics"][0].get("path").is_none());
-        assert!(comics["comics"][0].get("createdAt").is_none());
+        assert_eq!(
+            comics["comics"][0]["createdAtMs"],
+            created_ms(&source.join("Comics/Two").metadata().unwrap()).unwrap()
+        );
         assert!(comics["comics"][0].get("detailKey").is_none());
         assert!(comics["comics"][0].get("coverThumbnailKey").is_none());
         assert!(comics["comics"][0].get("coverKey").is_some());

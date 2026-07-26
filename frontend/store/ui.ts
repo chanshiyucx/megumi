@@ -5,7 +5,10 @@ import {
   subscribeWithSelector,
 } from 'zustand/middleware'
 import { immer } from 'zustand/middleware/immer'
-import type { LibraryNavStatus } from '@/types/library'
+import type {
+  ComicLibrarySortMode,
+  LibraryNavStatus,
+} from '@/types/library'
 
 export type ThemeMode = 'light' | 'dark'
 export type ComicLibraryViewMode = 'grid' | 'scroll'
@@ -16,6 +19,7 @@ interface UIState {
   isImmersive: boolean
   theme: ThemeMode
   comicLibraryViewMode: ComicLibraryViewMode
+  comicLibrarySortMode: ComicLibrarySortMode
   selectedLibraryId: string | null
   navStatus: Record<string, LibraryNavStatus>
   toggleSidebar: () => void
@@ -25,6 +29,7 @@ interface UIState {
   toggleImmersive: () => void
   setTheme: (theme: ThemeMode) => void
   setComicLibraryViewMode: (viewMode: ComicLibraryViewMode) => void
+  setComicLibrarySortMode: (sortMode: ComicLibrarySortMode) => void
   setSelectedLibraryId: (id: string | null) => void
   setNavStatus: (libraryId: string, status: LibraryNavStatus) => void
 }
@@ -35,6 +40,7 @@ interface PersistedUIState {
   isImmersive: boolean
   theme: ThemeMode
   comicLibraryViewMode: ComicLibraryViewMode
+  comicLibrarySortMode: ComicLibrarySortMode
   selectedLibraryId: string | null
   navStatus: Record<string, LibraryNavStatus>
 }
@@ -45,6 +51,13 @@ const sanitizeThemeMode = (theme: unknown): ThemeMode =>
 const sanitizeComicLibraryViewMode = (
   viewMode: unknown,
 ): ComicLibraryViewMode => (viewMode === 'scroll' ? 'scroll' : 'grid')
+
+const sanitizeComicLibrarySortMode = (
+  sortMode: unknown,
+): ComicLibrarySortMode => {
+  if (sortMode === 'created-desc' || sortMode === 'title') return sortMode
+  return 'created-asc'
+}
 
 const applyTheme = (theme: ThemeMode) => {
   if (typeof window === 'undefined') return
@@ -83,6 +96,7 @@ export const useUIStore = create<UIState>()(
         isImmersive: false,
         theme: 'light',
         comicLibraryViewMode: 'grid',
+        comicLibrarySortMode: 'created-asc',
         selectedLibraryId: null,
         navStatus: {},
         toggleSidebar: () =>
@@ -104,6 +118,10 @@ export const useUIStore = create<UIState>()(
           set({
             comicLibraryViewMode: sanitizeComicLibraryViewMode(viewMode),
           }),
+        setComicLibrarySortMode: (sortMode) =>
+          set({
+            comicLibrarySortMode: sanitizeComicLibrarySortMode(sortMode),
+          }),
         setSelectedLibraryId: (id) => set({ selectedLibraryId: id }),
         setNavStatus: (libraryId, status) =>
           set((state) => {
@@ -122,6 +140,7 @@ export const useUIStore = create<UIState>()(
           isImmersive: state.isImmersive,
           theme: state.theme,
           comicLibraryViewMode: state.comicLibraryViewMode,
+          comicLibrarySortMode: state.comicLibrarySortMode,
           selectedLibraryId: state.selectedLibraryId,
           navStatus: state.navStatus,
         }),

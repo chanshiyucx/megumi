@@ -1,4 +1,13 @@
-import { Grid2x2, Rows2, Star, StepForward, Trash2 } from 'lucide-react'
+import {
+  ArrowDownAZ,
+  CalendarArrowDown,
+  CalendarArrowUp,
+  Grid2x2,
+  Rows2,
+  Star,
+  StepForward,
+  Trash2,
+} from 'lucide-react'
 import { useRef } from 'react'
 import { VirtuosoGrid } from 'react-virtuoso'
 import { useShallow } from 'zustand/react/shallow'
@@ -13,7 +22,19 @@ import { cn } from '@/lib/style'
 import { useLibraryStore } from '@/store/library'
 import { useProgressStore } from '@/store/progress'
 import { useUIStore } from '@/store/ui'
-import type { Comic, FileTags, Image, Library } from '@/types/library'
+import type {
+  Comic,
+  ComicLibrarySortMode,
+  FileTags,
+  Image,
+  Library,
+} from '@/types/library'
+
+const NEXT_SORT_MODE: Record<ComicLibrarySortMode, ComicLibrarySortMode> = {
+  'created-asc': 'created-desc',
+  'created-desc': 'title',
+  title: 'created-asc',
+}
 
 interface ComicItemProps {
   comic: Comic
@@ -58,7 +79,9 @@ export function ComicLibrary({ selectedLibrary }: ComicLibraryProps) {
   const { readerVisible, middleClass, readerClass, openReader } = usePanelNav()
 
   const viewMode = useUIStore((s) => s.comicLibraryViewMode)
+  const sortMode = useUIStore((s) => s.comicLibrarySortMode)
   const setViewMode = useUIStore((s) => s.setComicLibraryViewMode)
+  const setSortMode = useUIStore((s) => s.setComicLibrarySortMode)
   const setNavStatus = useUIStore((s) => s.setNavStatus)
   const updateComicTags = useLibraryStore((s) => s.updateComicTags)
 
@@ -66,11 +89,17 @@ export function ComicLibrary({ selectedLibrary }: ComicLibraryProps) {
     (s) => s.navStatus[selectedLibrary.id]?.comicId ?? '',
   )
   const comics = useLibraryStore(
-    useShallow((s) => selectOrderedComicsForLibrary(s, selectedLibrary.id)),
+    useShallow((s) =>
+      selectOrderedComicsForLibrary(s, selectedLibrary.id, sortMode),
+    ),
   )
 
   const toggleViewMode = () => {
     setViewMode(viewMode === 'grid' ? 'scroll' : 'grid')
+  }
+
+  const cycleSortMode = () => {
+    setSortMode(NEXT_SORT_MODE[sortMode])
   }
 
   const {
@@ -136,7 +165,20 @@ export function ComicLibrary({ selectedLibrary }: ComicLibraryProps) {
   return (
     <div className="flex h-full w-full">
       <div className={cn('min-h-0 flex-1 flex-col border-r', middleClass)}>
-        <div className="bg-base text-subtle flex h-8 items-center justify-end border-b px-3 text-xs">
+        <div className="bg-base text-subtle flex h-8 items-center justify-between border-b px-3 text-xs">
+          <Button
+            aria-label="切换漫画排序"
+            className="h-6 w-6"
+            onClick={cycleSortMode}
+          >
+            {sortMode === 'created-asc' ? (
+              <CalendarArrowDown className="h-4 w-4" />
+            ) : sortMode === 'created-desc' ? (
+              <CalendarArrowUp className="h-4 w-4" />
+            ) : (
+              <ArrowDownAZ className="h-4 w-4" />
+            )}
+          </Button>
           <span>COMICS ({comics.length})</span>
         </div>
         <div aria-label="漫画列表" className="contents">

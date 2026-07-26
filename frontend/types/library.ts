@@ -6,6 +6,11 @@ export const LibraryType = {
 
 export type LibraryType = (typeof LibraryType)[keyof typeof LibraryType]
 
+export type ComicLibrarySortMode =
+  | 'created-asc'
+  | 'created-desc'
+  | 'title'
+
 export interface Library {
   id: string
   name: string
@@ -28,6 +33,7 @@ export interface Comic {
   path: string
   cover: string
   libraryId: string
+  createdAtMs: number
   starred: boolean
   deleted: boolean
 }

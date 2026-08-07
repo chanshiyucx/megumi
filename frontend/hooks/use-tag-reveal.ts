@@ -11,7 +11,11 @@ import { usePressGestures } from '@/hooks/use-press-gestures'
  * Attach the returned `ref` to the image element; a press anywhere outside it
  * (empty space or another image) collapses the reveal.
  */
-export function useTagReveal(onDoubleTap: () => void, enabled = true) {
+export function useTagReveal(
+  onDoubleTap: () => void,
+  enabled = true,
+  onTap?: () => void,
+) {
   const ref = useRef<HTMLElement>(null)
   const [open, setOpen] = useState(false)
   const close = () => {
@@ -24,6 +28,7 @@ export function useTagReveal(onDoubleTap: () => void, enabled = true) {
     onTap: enabled
       ? () => {
           setOpen((v) => !v)
+          onTap?.()
         }
       : undefined,
     onDoubleTap,

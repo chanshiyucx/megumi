@@ -110,6 +110,7 @@ export function ComicLibrary({ selectedLibrary }: ComicLibraryProps) {
     previewIndex,
     setPreviewIndex,
     previewActive,
+    jumpTo,
     trackStripIndex,
     setHoveredIndex,
     closePreview,
@@ -156,7 +157,9 @@ export function ComicLibrary({ selectedLibrary }: ComicLibraryProps) {
     <GridImage
       comicId={comicId}
       image={img}
+      isSelected={currentIndex === img.index}
       tagOnTap
+      onClick={jumpTo}
       onDoubleClick={setPreviewIndex}
       onTags={updateComicImageTags}
     />

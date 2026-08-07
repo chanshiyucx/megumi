@@ -14,8 +14,8 @@ interface GridItemProps {
   progress?: ComicProgress
   duration?: string
   // When set, a tap reveals both tag buttons and the title (centred at the
-  // bottom) instead of running onClick; tapping again hides them. Active tags
-  // stay shown either way. Used for page thumbnails; covers/TOC select on tap.
+  // bottom) and runs onClick; tapping again hides them. Active tags stay shown
+  // either way. Used for page thumbnails; covers/TOC select on tap.
   tagOnTap?: boolean
   onClick: () => void
   onDoubleClick?: () => void
@@ -43,6 +43,7 @@ export function GridItem({
   const { ref, open, gestures, close } = useTagReveal(
     () => onDoubleClick?.(),
     tagOnTap,
+    onClick,
   )
 
   return (

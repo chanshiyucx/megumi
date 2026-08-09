@@ -200,6 +200,15 @@ function parsePatchRequest(value: unknown): PatchTagsRequest | null {
   }
 }
 
+function parsePatchRequests(value: unknown): PatchTagsRequest[] | null {
+  const values = Array.isArray(value) ? value : [value]
+  if (!values.length) return null
+  const patches = values.map(parsePatchRequest)
+  return patches.every((patch): patch is PatchTagsRequest => patch !== null)
+    ? patches
+    : null
+}
+
 function applyPatch(tags: RemoteTags, patch: PatchTagsRequest) {
   const collectionName = TARGET_COLLECTIONS[patch.targetType]
   const collection = tags[collectionName]
@@ -244,19 +253,19 @@ async function handleTags(request: Request, env: Env) {
     )
   }
 
-  let patch: PatchTagsRequest | null = null
+  let patches: PatchTagsRequest[] | null = null
   try {
-    patch = parsePatchRequest(await request.json())
+    patches = parsePatchRequests(await request.json())
   } catch {
-    patch = null
+    patches = null
   }
 
-  if (!patch) {
+  if (!patches) {
     return jsonResponse(request, env, { error: 'Invalid request' }, { status: 400 })
   }
 
   const tags = await readTags(env)
-  applyPatch(tags, patch)
+  for (const patch of patches) applyPatch(tags, patch)
   const etag = await writeTags(env, tags)
   return jsonResponse(request, env, tags, {
     headers: { 'Cache-Control': 'no-store', ETag: etag },

@@ -8,6 +8,8 @@ MAX_AGE="31d"
 STATE_DIR="$LOCAL/.megumi"
 SYNC_STATE="$STATE_DIR/r2-sync.state.json"
 CUTOFF_MARKER="$STATE_DIR/r2-sync.cutoff"
+TAG_PRUNES="$STATE_DIR/tag-prunes.json"
+TAGS_API_URL="${MEGUMI_TAGS_API_URL:-}"
 
 # Fast mode tracks local changes so it does not need to list the large R2 bucket.
 COMMON_FLAGS=(
@@ -27,6 +29,26 @@ sync_tags_to_local() {
     --ignore-times \
     --log-file="$LOG" \
     --log-level INFO
+}
+
+sync_tag_prunes_to_remote() {
+  [ -s "$TAG_PRUNES" ] || return 0
+  if [ -z "$TAGS_API_URL" ]; then
+    echo "❌ 存在待删除标签，但未设置 MEGUMI_TAGS_API_URL"
+    return 1
+  fi
+
+  echo ""
+  echo "🏷️  同步 build 发现的残留标签删除项"
+  if curl --fail --silent --show-error \
+    --request PATCH \
+    --header "Content-Type: application/json" \
+    --data-binary "@$TAG_PRUNES" \
+    "${TAGS_API_URL%/}/tags" >> "$LOG" 2>&1; then
+    rm -f "$TAG_PRUNES"
+    return 0
+  fi
+  return 1
 }
 
 read_last_success_epoch() {
@@ -153,12 +175,16 @@ case "$MODE" in
 esac
 
 if [ $resource_status -eq 0 ]; then
-  if write_sync_state "$MODE" "$sync_start_epoch"; then
-    sync_tags_to_local
-    tags_status=$?
+  if sync_tag_prunes_to_remote; then
+    if write_sync_state "$MODE" "$sync_start_epoch"; then
+      sync_tags_to_local
+      tags_status=$?
+    else
+      echo "❌ 写入同步状态失败: $SYNC_STATE"
+      resource_status=1
+    fi
   else
-    echo "❌ 写入同步状态失败: $SYNC_STATE"
-    resource_status=1
+    tags_status=1
   fi
 fi
 
@@ -170,7 +196,7 @@ else
   if [ $resource_status -ne 0 ]; then
     echo "❌ 资源同步出错，请查看日志: $LOG"
   else
-    echo "❌ tags.json 同步到本地失败；资源同步已完成。请查看日志: $LOG"
+    echo "❌ 标签同步失败；资源同步已完成。请查看日志: $LOG"
   fi
   exit 1
 fi

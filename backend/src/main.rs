@@ -23,6 +23,7 @@ mod state;
 const MANIFEST_FILE: &str = "manifest.json";
 const COMIC_MANIFEST_DIR: &str = "manifests";
 const TAGS_FILE: &str = ".megumi/tags.json";
+const TAG_PRUNES_FILE: &str = ".megumi/tag-prunes.json";
 const BUILD_LOCK_FILE: &str = ".megumi/build.lock";
 const THUMBNAIL_DIR: &str = "thumbnail";
 const SCHEMA_VERSION: u32 = 6;
@@ -195,6 +196,18 @@ struct RemoteTags {
     videos: BTreeMap<String, FileTags>,
     #[serde(default)]
     images: BTreeMap<String, FileTags>,
+    #[serde(default)]
+    chapters: BTreeMap<String, FileTags>,
+    #[serde(rename = "updatedAt", skip_serializing_if = "Option::is_none")]
+    updated_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PendingTagPrune {
+    target_type: String,
+    target_id: String,
+    tags: FileTags,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -564,7 +577,6 @@ fn build(args: BuildArgs) -> Result<()> {
     let phase_started = Instant::now();
     let libraries = assemble_libraries(database.load_units()?)?;
     ctx.next_state = database.load_build_state()?;
-    warn_missing_tag_targets(&ctx);
     let manifest = Manifest {
         schema_version: SCHEMA_VERSION,
         generated_at: now_rfc3339()?,
@@ -581,6 +593,7 @@ fn build(args: BuildArgs) -> Result<()> {
     log_phase_elapsed("cleanup", phase_started);
 
     let phase_started = Instant::now();
+    let pruned_tag_targets = prune_missing_tag_targets(&mut ctx)?;
     database.set_applied_tags(ctx.remote_tags.as_ref())?;
     if full_scan {
         database.record_full_scan(now_ms)?;
@@ -589,6 +602,10 @@ fn build(args: BuildArgs) -> Result<()> {
     database.set_volume_device(volume_device)?;
     database.set_event_cursor(fsevents::current_cursor())?;
     log_phase_elapsed("state metadata commit", phase_started);
+
+    if pruned_tag_targets > 0 {
+        eprintln!("removed {pruned_tag_targets} stale targets from {TAGS_FILE}");
+    }
 
     let synced_tag_targets = ctx.progress.synced_tag_targets.load(Ordering::Relaxed);
     if synced_tag_targets > 0 {
@@ -1239,8 +1256,6 @@ fn generate_video_thumbnail(source: &Path, dest: &Path, duration_ms: u64) -> Res
         fs::create_dir_all(parent)
             .with_context(|| format!("create video thumbnail directory: {}", parent.display()))?;
     }
-    let seq = THUMB_TMP_SEQ.fetch_add(1, Ordering::Relaxed);
-    let tmp = dest.with_extension(format!("webp.{}.{seq}.tmp", std::process::id()));
     let seek_seconds = duration_ms as f64 / 10_000.0;
     let output = ProcessCommand::new(video_tool("MEGUMI_FFMPEG", "ffmpeg"))
         .args(["-v", "error", "-ss", &format!("{seek_seconds:.3}"), "-i"])
@@ -1251,26 +1266,23 @@ fn generate_video_thumbnail(source: &Path, dest: &Path, duration_ms: u64) -> Res
             "-vf",
             "scale=256:-2:flags=lanczos",
             "-c:v",
-            "libwebp",
-            "-quality",
-            "72",
+            "png",
             "-f",
-            "webp",
-            "-y",
+            "image2pipe",
+            "pipe:1",
         ])
-        .arg(&tmp)
         .output()
         .with_context(|| format!("run ffmpeg for {}", source.display()))?;
     if !output.status.success() {
-        let _ = fs::remove_file(&tmp);
         bail!(
-            "ffmpeg thumbnail failed for {}: {}",
+            "ffmpeg frame extraction failed for {}: {}",
             source.display(),
             String::from_utf8_lossy(&output.stderr).trim()
         );
     }
-    fs::rename(&tmp, dest).with_context(|| format!("write video thumbnail: {}", dest.display()))?;
-    Ok(())
+    let (pixels, width, height, _, _) = decode_image_for_thumbnail(&output.stdout)
+        .with_context(|| format!("decode video frame: {}", source.display()))?;
+    write_webp_thumbnail(dest, &pixels, width, height, THUMBNAIL_QUALITY)
 }
 
 fn remove_unit_from_memory_state(build_state: &mut BuildState, unit_key: &str) {
@@ -1459,6 +1471,9 @@ fn sync_target_tags(
     let Some(current) = ctx.remote_tags.as_ref() else {
         return Ok(());
     };
+    if !path.exists() {
+        return Ok(());
+    }
     let desired = desired_local_tags(select(current).get(key));
     let previously_applied = ctx
         .previous_state
@@ -1505,10 +1520,7 @@ fn desired_local_tags(tags: Option<&FileTags>) -> FileTags {
 }
 
 #[cfg(target_os = "macos")]
-fn warn_missing_tag_targets(ctx: &BuildContext) {
-    let Some(tags) = ctx.remote_tags.as_ref() else {
-        return;
-    };
+fn prune_missing_tag_targets(ctx: &mut BuildContext) -> Result<usize> {
     let comic_titles: BTreeSet<_> = ctx
         .next_state
         .comics
@@ -1529,51 +1541,92 @@ fn warn_missing_tag_targets(ctx: &BuildContext) {
         .filter(|key| has_extension(Path::new(key), VIDEO_EXTENSIONS))
         .map(|key| book_title(Path::new(key)))
         .collect();
-    let mut missing = Vec::new();
 
-    for (key, file_tags) in &tags.comics {
-        if has_active_remote_tag(file_tags) && !comic_titles.contains(key.as_str()) {
-            missing.push(format!("comic:{key}"));
-        }
-    }
-    for (key, file_tags) in &tags.books {
-        if has_active_remote_tag(file_tags) && !book_titles.contains(key) {
-            missing.push(format!("book:{key}"));
-        }
-    }
-    for (key, file_tags) in &tags.videos {
-        if has_active_remote_tag(file_tags) && !video_titles.contains(key) {
-            missing.push(format!("video:{key}"));
-        }
-    }
-    for (key, file_tags) in &tags.images {
-        if has_active_remote_tag(file_tags) && !ctx.next_state.files.contains_key(key) {
-            missing.push(format!("image:{key}"));
-        }
-    }
+    let Some(tags) = ctx.remote_tags.as_mut() else {
+        return Ok(0);
+    };
+    let mut prunes = Vec::new();
 
-    if !missing.is_empty() {
-        let sample = missing
-            .iter()
-            .take(10)
-            .cloned()
-            .collect::<Vec<_>>()
-            .join(", ");
-        let suffix = if missing.len() > 10 { ", ..." } else { "" };
-        eprintln!(
-            "warning: {} remote tag targets are not present locally; will retry on a later build: {sample}{suffix}",
-            missing.len()
-        );
+    tags.comics.retain(|key, _| {
+        let keep = comic_titles.contains(key.as_str());
+        if !keep {
+            prunes.push(pending_tag_prune("comic", key));
+        }
+        keep
+    });
+    tags.books.retain(|key, _| {
+        let keep = book_titles.contains(key);
+        if !keep {
+            prunes.push(pending_tag_prune("book", key));
+        }
+        keep
+    });
+    tags.videos.retain(|key, _| {
+        let keep = video_titles.contains(key);
+        if !keep {
+            prunes.push(pending_tag_prune("video", key));
+        }
+        keep
+    });
+    tags.images.retain(|key, _| {
+        let keep = ctx.next_state.files.contains_key(key);
+        if !keep {
+            prunes.push(pending_tag_prune("image", key));
+        }
+        keep
+    });
+    tags.chapters.retain(|key, _| {
+        let keep = book_titles.iter().any(|title| {
+            key.strip_prefix(title)
+                .is_some_and(|rest| rest.starts_with(':'))
+        });
+        if !keep {
+            prunes.push(pending_tag_prune("chapter", key));
+        }
+        keep
+    });
+
+    let removed = prunes.len();
+    if removed > 0 {
+        tags.updated_at = Some(now_rfc3339()?);
+        write_json(&ctx.source.join(TAGS_FILE), tags)?;
+        write_pending_tag_prunes(&ctx.source, prunes)?;
+    }
+    Ok(removed)
+}
+
+#[cfg(target_os = "macos")]
+fn pending_tag_prune(target_type: &str, target_id: &str) -> PendingTagPrune {
+    PendingTagPrune {
+        target_type: target_type.to_string(),
+        target_id: target_id.to_string(),
+        tags: FileTags {
+            starred: Some(false),
+            deleted: Some(false),
+        },
     }
 }
 
 #[cfg(target_os = "macos")]
-fn has_active_remote_tag(tags: &FileTags) -> bool {
-    tags.starred == Some(true) || tags.deleted == Some(true)
+fn write_pending_tag_prunes(source: &Path, new_prunes: Vec<PendingTagPrune>) -> Result<()> {
+    let path = source.join(TAG_PRUNES_FILE);
+    let existing = match fs::read(&path) {
+        Ok(raw) => serde_json::from_slice::<Vec<PendingTagPrune>>(&raw)
+            .with_context(|| format!("parse pending tag prunes: {}", path.display()))?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => return Err(error).with_context(|| format!("read {}", path.display())),
+    };
+    let mut merged = BTreeMap::new();
+    for prune in existing.into_iter().chain(new_prunes) {
+        merged.insert((prune.target_type.clone(), prune.target_id.clone()), prune);
+    }
+    write_json(&path, &merged.into_values().collect::<Vec<_>>())
 }
 
 #[cfg(not(target_os = "macos"))]
-fn warn_missing_tag_targets(_ctx: &BuildContext) {}
+fn prune_missing_tag_targets(_ctx: &mut BuildContext) -> Result<usize> {
+    Ok(0)
+}
 
 #[cfg(target_os = "macos")]
 fn get_tag_name(tag: &str) -> &str {
@@ -2040,12 +2093,23 @@ fn create_thumbnail(
         &mut worker.resizer,
     )?;
 
+    write_webp_thumbnail(dest, &resized, target_width, target_height, quality)?;
+    Ok((original_width, original_height))
+}
+
+fn write_webp_thumbnail(
+    dest: &Path,
+    pixels: &[u8],
+    width: u32,
+    height: u32,
+    quality: u8,
+) -> Result<()> {
     let seq = THUMB_TMP_SEQ.fetch_add(1, Ordering::Relaxed);
     let tmp = dest.with_extension(format!("webp.{}.{seq}.tmp", std::process::id()));
-    let encoder = webp::Encoder::from_rgb(&resized, target_width, target_height);
+    let encoder = webp::Encoder::from_rgb(pixels, width, height);
     let encoded = encoder.encode(f32::from(quality));
     if fs::read(dest).is_ok_and(|existing| existing == *encoded) {
-        return Ok((original_width, original_height));
+        return Ok(());
     }
     if let Err(error) = fs::write(&tmp, &*encoded)
         .with_context(|| format!("write temporary thumbnail: {}", tmp.display()))
@@ -2059,7 +2123,7 @@ fn create_thumbnail(
         let _ = fs::remove_file(&tmp);
         return Err(error);
     }
-    Ok((original_width, original_height))
+    Ok(())
 }
 
 fn is_jpeg(data: &[u8]) -> bool {

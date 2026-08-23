@@ -12,7 +12,8 @@ use crate::{
 };
 
 const DATABASE_FILE: &str = ".megumi/state.sqlite3";
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
+const PREVIOUS_SCHEMA_VERSION: i64 = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnitKind {
@@ -105,7 +106,9 @@ impl StateDb {
         let version: i64 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .context("read build state schema version")?;
-        if version != 0 && version != SCHEMA_VERSION {
+        if version == PREVIOUS_SCHEMA_VERSION {
+            migrate_schema_v4_to_v5(&connection)?;
+        } else if version != 0 && version != SCHEMA_VERSION {
             drop(connection);
             backup_database(&path)?;
             rebuilt = true;
@@ -216,17 +219,18 @@ impl StateDb {
 
     pub fn load_build_state(&self) -> Result<BuildState> {
         let mut files = BTreeMap::new();
-        let mut statement = self
-            .connection
-            .prepare("SELECT path, size, mtime_ms, width, height FROM files ORDER BY path")?;
+        let mut statement = self.connection.prepare(
+            "SELECT path, inode, size, mtime_ms, width, height FROM files ORDER BY path",
+        )?;
         let rows = statement.query_map([], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 FileState {
-                    size: row.get(1)?,
-                    mtime_ms: row.get(2)?,
-                    width: row.get(3)?,
-                    height: row.get(4)?,
+                    inode: row.get(1)?,
+                    size: row.get(2)?,
+                    mtime_ms: row.get(3)?,
+                    width: row.get(4)?,
+                    height: row.get(5)?,
                 },
             ))
         })?;
@@ -483,6 +487,7 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
          CREATE TABLE IF NOT EXISTS files(
              path TEXT PRIMARY KEY,
              unit_key TEXT NOT NULL REFERENCES units(unit_key) ON DELETE CASCADE,
+             inode INTEGER,
              size INTEGER NOT NULL,
              mtime_ms INTEGER NOT NULL,
              width INTEGER,
@@ -504,6 +509,18 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn migrate_schema_v4_to_v5(connection: &Connection) -> Result<()> {
+    connection
+        .execute_batch(
+            "BEGIN;
+             ALTER TABLE files ADD COLUMN inode INTEGER;
+             PRAGMA user_version=5;
+             COMMIT;",
+        )
+        .context("migrate build state schema from version 4 to 5")?;
+    Ok(())
+}
+
 fn set_meta(transaction: &Transaction<'_>, key: &str, value: &str) -> Result<()> {
     transaction.execute(
         "INSERT INTO metadata(key, value) VALUES (?1, ?2)
@@ -520,13 +537,14 @@ fn replace_unit_files(
 ) -> Result<()> {
     transaction.execute("DELETE FROM files WHERE unit_key=?1", [unit_key])?;
     let mut statement = transaction.prepare(
-        "INSERT INTO files(path, unit_key, size, mtime_ms, width, height)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT INTO files(path, unit_key, inode, size, mtime_ms, width, height)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
     )?;
     for (path, state) in files {
         statement.execute(params![
             path,
             unit_key,
+            state.inode,
             state.size,
             state.mtime_ms,
             state.width,
@@ -596,6 +614,7 @@ mod tests {
         let files = [(
             "Comics/One/001.jpg".into(),
             FileState {
+                inode: Some(1),
                 size: 10,
                 mtime_ms: 1,
                 width: Some(10),
@@ -641,6 +660,7 @@ mod tests {
         let files = [(
             "Comics/One/001.jpg".into(),
             FileState {
+                inode: Some(1),
                 size: 10,
                 mtime_ms: 1,
                 width: Some(10),
@@ -689,6 +709,7 @@ mod tests {
         let files = [(
             video.key.clone(),
             FileState {
+                inode: Some(1),
                 size: video.size,
                 mtime_ms: video.mtime_ms,
                 width: Some(video.width),

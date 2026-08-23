@@ -8,7 +8,8 @@ MAX_AGE="31d"
 STATE_DIR="$LOCAL/.megumi"
 SYNC_STATE="$STATE_DIR/r2-sync.state.json"
 CUTOFF_MARKER="$STATE_DIR/r2-sync.cutoff"
-TAG_PRUNES="$STATE_DIR/tag-prunes.json"
+TAG_PATCHES="$STATE_DIR/tag-patches.json"
+LEGACY_TAG_PRUNES="$STATE_DIR/tag-prunes.json"
 TAGS_API_URL="${MEGUMI_TAGS_API_URL:-}"
 
 # Fast mode tracks local changes so it does not need to list the large R2 bucket.
@@ -31,24 +32,33 @@ sync_tags_to_local() {
     --log-level INFO
 }
 
-sync_tag_prunes_to_remote() {
-  [ -s "$TAG_PRUNES" ] || return 0
+sync_tag_patch_file() {
+  local patch_file="$1"
+
+  [ -s "$patch_file" ] || return 0
+  if curl --fail --silent --show-error \
+    --request PATCH \
+    --header "Content-Type: application/json" \
+    --data-binary "@$patch_file" \
+    "${TAGS_API_URL%/}/tags" >> "$LOG" 2>&1; then
+    rm -f "$patch_file"
+    return 0
+  fi
+  return 1
+}
+
+sync_tag_patches_to_remote() {
+  if [ ! -s "$LEGACY_TAG_PRUNES" ] && [ ! -s "$TAG_PATCHES" ]; then
+    return 0
+  fi
   if [ -z "$TAGS_API_URL" ]; then
-    echo "❌ 存在待删除标签，但未设置 MEGUMI_TAGS_API_URL"
+    echo "❌ 存在待同步标签变更，但未设置 MEGUMI_TAGS_API_URL"
     return 1
   fi
 
   echo ""
-  echo "🏷️  同步 build 发现的残留标签删除项"
-  if curl --fail --silent --show-error \
-    --request PATCH \
-    --header "Content-Type: application/json" \
-    --data-binary "@$TAG_PRUNES" \
-    "${TAGS_API_URL%/}/tags" >> "$LOG" 2>&1; then
-    rm -f "$TAG_PRUNES"
-    return 0
-  fi
-  return 1
+  echo "🏷️  同步 build 发现的标签删除和重命名"
+  sync_tag_patch_file "$LEGACY_TAG_PRUNES" && sync_tag_patch_file "$TAG_PATCHES"
 }
 
 read_last_success_epoch() {
@@ -175,7 +185,7 @@ case "$MODE" in
 esac
 
 if [ $resource_status -eq 0 ]; then
-  if sync_tag_prunes_to_remote; then
+  if sync_tag_patches_to_remote; then
     if write_sync_state "$MODE" "$sync_start_epoch"; then
       sync_tags_to_local
       tags_status=$?

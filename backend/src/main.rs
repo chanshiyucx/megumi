@@ -23,7 +23,7 @@ mod state;
 const MANIFEST_FILE: &str = "manifest.json";
 const COMIC_MANIFEST_DIR: &str = "manifests";
 const TAGS_FILE: &str = ".megumi/tags.json";
-const TAG_PRUNES_FILE: &str = ".megumi/tag-prunes.json";
+const TAG_PATCHES_FILE: &str = ".megumi/tag-patches.json";
 const BUILD_LOCK_FILE: &str = ".megumi/build.lock";
 const THUMBNAIL_DIR: &str = "thumbnail";
 const SCHEMA_VERSION: u32 = 6;
@@ -181,7 +181,9 @@ struct ChapterManifest {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 struct FileTags {
+    #[serde(skip_serializing_if = "Option::is_none")]
     starred: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     deleted: Option<bool>,
 }
 
@@ -204,7 +206,7 @@ struct RemoteTags {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct PendingTagPrune {
+struct PendingTagPatch {
     target_type: String,
     target_id: String,
     tags: FileTags,
@@ -223,6 +225,8 @@ struct BuildState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct FileState {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    inode: Option<u64>,
     size: u64,
     mtime_ms: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -350,6 +354,7 @@ struct BuildContext {
     previous_state: BuildState,
     next_state: BuildState,
     progress: BuildProgress,
+    loaded_remote_tags: Option<RemoteTags>,
     remote_tags: Option<RemoteTags>,
     recovery_image_mtimes: BTreeMap<String, u64>,
 }
@@ -422,6 +427,7 @@ fn build(args: BuildArgs) -> Result<()> {
         .map(|unit| (unit.key.clone(), unit))
         .collect::<BTreeMap<_, _>>();
     let dirty_units = database.dirty_units()?.into_iter().collect::<BTreeSet<_>>();
+    let previous_state = database.load_build_state()?;
     log_phase_elapsed("state index load", phase_started);
 
     let phase_started = Instant::now();
@@ -447,7 +453,6 @@ fn build(args: BuildArgs) -> Result<()> {
     log_phase_elapsed("discovery", phase_started);
 
     let phase_started = Instant::now();
-    let previous_state = database.load_build_state()?;
     let remote_tags = load_remote_tags(&source)?;
     let applied_tags = remote_tags
         .clone()
@@ -465,12 +470,14 @@ fn build(args: BuildArgs) -> Result<()> {
         previous_state,
         next_state,
         progress: BuildProgress::new(),
+        loaded_remote_tags: remote_tags.clone(),
         remote_tags,
         recovery_image_mtimes,
     };
     log_phase_elapsed("build state load", phase_started);
 
     let phase_started = Instant::now();
+    reconcile_image_tag_targets(&mut ctx, !volume_changed)?;
     sync_cached_tag_changes(&ctx, &cached_units)?;
     log_phase_elapsed("tag sync", phase_started);
 
@@ -593,7 +600,8 @@ fn build(args: BuildArgs) -> Result<()> {
     log_phase_elapsed("cleanup", phase_started);
 
     let phase_started = Instant::now();
-    let pruned_tag_targets = prune_missing_tag_targets(&mut ctx)?;
+    prune_missing_tag_targets(&mut ctx);
+    let patched_tag_targets = persist_tag_changes(&mut ctx)?;
     database.set_applied_tags(ctx.remote_tags.as_ref())?;
     if full_scan {
         database.record_full_scan(now_ms)?;
@@ -603,8 +611,8 @@ fn build(args: BuildArgs) -> Result<()> {
     database.set_event_cursor(fsevents::current_cursor())?;
     log_phase_elapsed("state metadata commit", phase_started);
 
-    if pruned_tag_targets > 0 {
-        eprintln!("removed {pruned_tag_targets} stale targets from {TAGS_FILE}");
+    if patched_tag_targets > 0 {
+        eprintln!("queued {patched_tag_targets} local tag changes for remote sync");
     }
 
     let synced_tag_targets = ctx.progress.synced_tag_targets.load(Ordering::Relaxed);
@@ -1100,6 +1108,7 @@ fn build_video_unit(
         .with_context(|| format!("read video metadata: {}", scan.path.display()))?;
     let size = metadata.len();
     let mtime_ms = modified_ms(&metadata)?;
+    let inode = metadata.ino();
     let previous = ctx.previous_state.files.get(&unit_key);
     sync_video_tags(ctx, &scan.path, &scan.title, previous.is_none())?;
 
@@ -1108,6 +1117,7 @@ fn build_video_unit(
     let unchanged = previous.is_some_and(|state| {
         state.size == size
             && state.mtime_ms == mtime_ms
+            && state.inode.is_none_or(|previous| previous == inode)
             && state.width.is_some()
             && state.height.is_some()
     });
@@ -1140,6 +1150,7 @@ fn build_video_unit(
     ctx.next_state.files.insert(
         unit_key.clone(),
         FileState {
+            inode: Some(inode),
             size,
             mtime_ms,
             width: Some(width),
@@ -1520,7 +1531,126 @@ fn desired_local_tags(tags: Option<&FileTags>) -> FileTags {
 }
 
 #[cfg(target_os = "macos")]
-fn prune_missing_tag_targets(ctx: &mut BuildContext) -> Result<usize> {
+fn reconcile_image_tag_targets(ctx: &mut BuildContext, match_inode: bool) -> Result<()> {
+    let Some(tags) = ctx.remote_tags.as_mut() else {
+        return Ok(());
+    };
+    let current_identities = if match_inode {
+        Some(current_image_identities(&ctx.source, tags.images.keys())?)
+    } else {
+        None
+    };
+    let mut reconciled = BTreeMap::new();
+
+    for (old_key, file_tags) in &tags.images {
+        let current_path = ctx.source.join(old_key);
+        let current_metadata = current_path.metadata().ok().filter(|metadata| {
+            metadata.is_file() && has_extension(Path::new(old_key), IMAGE_EXTENSIONS)
+        });
+        let still_exists = current_metadata.is_some();
+        let target_key = if let Some(current) = current_identities.as_ref() {
+            match ctx.previous_state.files.get(old_key) {
+                Some(state) => match state.inode {
+                    Some(inode) => current.by_inode.get(&inode).cloned(),
+                    None => {
+                        let same_file_at_same_path =
+                            current_metadata.as_ref().is_some_and(|metadata| {
+                                metadata.len() == state.size
+                                    && modified_ms(metadata)
+                                        .is_ok_and(|mtime_ms| mtime_ms == state.mtime_ms)
+                            });
+                        if same_file_at_same_path {
+                            Some(old_key.clone())
+                        } else {
+                            current
+                                .by_signature
+                                .get(&(state.size, state.mtime_ms))
+                                .and_then(Clone::clone)
+                        }
+                    }
+                },
+                None => still_exists.then(|| old_key.clone()),
+            }
+        } else {
+            still_exists.then(|| old_key.clone())
+        };
+
+        if let Some(target_key) = target_key {
+            merge_active_tags(reconciled.entry(target_key).or_default(), *file_tags);
+        }
+    }
+
+    tags.images = reconciled;
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+struct CurrentImageIdentities {
+    by_inode: BTreeMap<u64, String>,
+    by_signature: BTreeMap<(u64, u64), Option<String>>,
+}
+
+#[cfg(target_os = "macos")]
+fn current_image_identities<'a>(
+    source: &Path,
+    tagged_keys: impl Iterator<Item = &'a String>,
+) -> Result<CurrentImageIdentities> {
+    let parents = tagged_keys
+        .filter_map(|key| Path::new(key).parent())
+        .map(Path::to_path_buf)
+        .collect::<BTreeSet<_>>();
+    let mut by_inode = BTreeMap::new();
+    let mut by_signature = BTreeMap::new();
+
+    for parent in parents {
+        let directory = source.join(&parent);
+        let entries = match fs::read_dir(&directory) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("read tagged image directory: {}", directory.display())
+                });
+            }
+        };
+        for entry in entries {
+            let entry = entry?;
+            let path = entry.path();
+            if !entry.file_type()?.is_file() || !has_extension(&path, IMAGE_EXTENSIONS) {
+                continue;
+            }
+            let metadata = entry.metadata()?;
+            let key = relative_key(source, &path)?;
+            by_inode.insert(metadata.ino(), key.clone());
+            let signature = (metadata.len(), modified_ms(&metadata)?);
+            match by_signature.entry(signature) {
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    entry.insert(Some(key));
+                }
+                std::collections::btree_map::Entry::Occupied(mut entry) => {
+                    entry.insert(None);
+                }
+            }
+        }
+    }
+    Ok(CurrentImageIdentities {
+        by_inode,
+        by_signature,
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn merge_active_tags(target: &mut FileTags, source: FileTags) {
+    if source.starred == Some(true) {
+        target.starred = Some(true);
+    }
+    if source.deleted == Some(true) {
+        target.deleted = Some(true);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn prune_missing_tag_targets(ctx: &mut BuildContext) {
     let comic_titles: BTreeSet<_> = ctx
         .next_state
         .comics
@@ -1543,88 +1673,109 @@ fn prune_missing_tag_targets(ctx: &mut BuildContext) -> Result<usize> {
         .collect();
 
     let Some(tags) = ctx.remote_tags.as_mut() else {
-        return Ok(0);
+        return;
     };
-    let mut prunes = Vec::new();
 
-    tags.comics.retain(|key, _| {
-        let keep = comic_titles.contains(key.as_str());
-        if !keep {
-            prunes.push(pending_tag_prune("comic", key));
-        }
-        keep
-    });
-    tags.books.retain(|key, _| {
-        let keep = book_titles.contains(key);
-        if !keep {
-            prunes.push(pending_tag_prune("book", key));
-        }
-        keep
-    });
-    tags.videos.retain(|key, _| {
-        let keep = video_titles.contains(key);
-        if !keep {
-            prunes.push(pending_tag_prune("video", key));
-        }
-        keep
-    });
-    tags.images.retain(|key, _| {
-        let keep = ctx.next_state.files.contains_key(key);
-        if !keep {
-            prunes.push(pending_tag_prune("image", key));
-        }
-        keep
-    });
+    tags.comics
+        .retain(|key, _| comic_titles.contains(key.as_str()));
+    tags.books.retain(|key, _| book_titles.contains(key));
+    tags.videos.retain(|key, _| video_titles.contains(key));
+    tags.images
+        .retain(|key, _| ctx.next_state.files.contains_key(key));
     tags.chapters.retain(|key, _| {
-        let keep = book_titles.iter().any(|title| {
+        book_titles.iter().any(|title| {
             key.strip_prefix(title)
                 .is_some_and(|rest| rest.starts_with(':'))
-        });
-        if !keep {
-            prunes.push(pending_tag_prune("chapter", key));
-        }
-        keep
+        })
     });
-
-    let removed = prunes.len();
-    if removed > 0 {
-        tags.updated_at = Some(now_rfc3339()?);
-        write_json(&ctx.source.join(TAGS_FILE), tags)?;
-        write_pending_tag_prunes(&ctx.source, prunes)?;
-    }
-    Ok(removed)
 }
 
 #[cfg(target_os = "macos")]
-fn pending_tag_prune(target_type: &str, target_id: &str) -> PendingTagPrune {
-    PendingTagPrune {
-        target_type: target_type.to_string(),
-        target_id: target_id.to_string(),
-        tags: FileTags {
-            starred: Some(false),
-            deleted: Some(false),
-        },
+fn persist_tag_changes(ctx: &mut BuildContext) -> Result<usize> {
+    let (Some(before), Some(after)) = (ctx.loaded_remote_tags.as_ref(), ctx.remote_tags.as_ref())
+    else {
+        return Ok(0);
+    };
+    let patches = tag_patches_between(before, after);
+    if patches.is_empty() {
+        return Ok(0);
+    }
+
+    let tags = ctx.remote_tags.as_mut().expect("checked above");
+    tags.updated_at = Some(now_rfc3339()?);
+    write_json(&ctx.source.join(TAGS_FILE), tags)?;
+    write_pending_tag_patches(&ctx.source, patches.clone())?;
+    Ok(patches.len())
+}
+
+#[cfg(target_os = "macos")]
+fn tag_patches_between(before: &RemoteTags, after: &RemoteTags) -> Vec<PendingTagPatch> {
+    let mut patches = Vec::new();
+    append_tag_patches("comic", &before.comics, &after.comics, &mut patches);
+    append_tag_patches("book", &before.books, &after.books, &mut patches);
+    append_tag_patches("video", &before.videos, &after.videos, &mut patches);
+    append_tag_patches("image", &before.images, &after.images, &mut patches);
+    append_tag_patches("chapter", &before.chapters, &after.chapters, &mut patches);
+    patches
+}
+
+#[cfg(target_os = "macos")]
+fn append_tag_patches(
+    target_type: &str,
+    before: &BTreeMap<String, FileTags>,
+    after: &BTreeMap<String, FileTags>,
+    patches: &mut Vec<PendingTagPatch>,
+) {
+    let keys = before.keys().chain(after.keys()).collect::<BTreeSet<_>>();
+    for key in keys {
+        let old = active_tag_flags(before.get(key));
+        let new = active_tag_flags(after.get(key));
+        if old == new {
+            continue;
+        }
+        patches.push(PendingTagPatch {
+            target_type: target_type.to_string(),
+            target_id: key.clone(),
+            tags: FileTags {
+                starred: Some(new.0),
+                deleted: Some(new.1),
+            },
+        });
     }
 }
 
 #[cfg(target_os = "macos")]
-fn write_pending_tag_prunes(source: &Path, new_prunes: Vec<PendingTagPrune>) -> Result<()> {
-    let path = source.join(TAG_PRUNES_FILE);
+fn active_tag_flags(tags: Option<&FileTags>) -> (bool, bool) {
+    let tags = tags.copied().unwrap_or_default();
+    (tags.starred == Some(true), tags.deleted == Some(true))
+}
+
+#[cfg(target_os = "macos")]
+fn write_pending_tag_patches(source: &Path, new_patches: Vec<PendingTagPatch>) -> Result<()> {
+    let path = source.join(TAG_PATCHES_FILE);
     let existing = match fs::read(&path) {
-        Ok(raw) => serde_json::from_slice::<Vec<PendingTagPrune>>(&raw)
-            .with_context(|| format!("parse pending tag prunes: {}", path.display()))?,
+        Ok(raw) => serde_json::from_slice::<Vec<PendingTagPatch>>(&raw)
+            .with_context(|| format!("parse pending tag patches: {}", path.display()))?,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
         Err(error) => return Err(error).with_context(|| format!("read {}", path.display())),
     };
     let mut merged = BTreeMap::new();
-    for prune in existing.into_iter().chain(new_prunes) {
-        merged.insert((prune.target_type.clone(), prune.target_id.clone()), prune);
+    for patch in existing.into_iter().chain(new_patches) {
+        merged.insert((patch.target_type.clone(), patch.target_id.clone()), patch);
     }
     write_json(&path, &merged.into_values().collect::<Vec<_>>())
 }
 
 #[cfg(not(target_os = "macos"))]
-fn prune_missing_tag_targets(_ctx: &mut BuildContext) -> Result<usize> {
+fn reconcile_image_tag_targets(_ctx: &mut BuildContext, _match_inode: bool) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn prune_missing_tag_targets(_ctx: &mut BuildContext) {}
+
+#[cfg(not(target_os = "macos"))]
+fn persist_tag_changes(_ctx: &mut BuildContext) -> Result<usize> {
     Ok(0)
 }
 
@@ -1782,6 +1933,7 @@ fn process_image(
         .with_context(|| format!("read metadata: {}", source_path.display()))?;
     let size = metadata.len();
     let mtime_ms = modified_ms(&metadata)?;
+    let inode = metadata.ino();
     let key = rel.clone();
     let thumbnail_key = thumbnail_key_for(&rel);
     let output_thumb = ctx.output.join(&thumbnail_key);
@@ -1791,6 +1943,7 @@ fn process_image(
     let unchanged = previous.is_some_and(|state| {
         state.size == size
             && state.mtime_ms == mtime_ms
+            && state.inode.is_none_or(|previous| previous == inode)
             && state.width.is_some()
             && state.height.is_some()
     });
@@ -1835,6 +1988,7 @@ fn process_image(
         },
         state_key: rel,
         state: FileState {
+            inode: Some(inode),
             size,
             mtime_ms,
             width: Some(width),
@@ -1889,13 +2043,16 @@ fn process_book(ctx: &mut BuildContext, source_path: &Path) -> Result<BookManife
     let key = rel.clone();
     let detail_key = detail_manifest_key_for(&strip_extension(&rel));
     let file_state = FileState {
+        inode: Some(metadata.ino()),
         size,
         mtime_ms,
         width: None,
         height: None,
     };
     let previous = ctx.previous_state.files.get(&rel);
-    let detail_unchanged = previous == Some(&file_state) && ctx.output.join(&detail_key).is_file();
+    let detail_unchanged = previous
+        .is_some_and(|state| state.size == size && state.mtime_ms == mtime_ms)
+        && ctx.output.join(&detail_key).is_file();
     ctx.next_state.files.insert(rel.clone(), file_state);
 
     let title = book_title(source_path);
@@ -2879,11 +3036,10 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn unchanged_tag_snapshot_skips_existing_targets_but_syncs_new_files() {
+    fn unchanged_tag_snapshot_skips_existing_targets() {
         let temp = TestDir::new();
         let source = &temp.0;
         let existing_image = source.join("Comics/One/001.png");
-        let future_image = source.join("Comics/One/002.png");
         write_test_image(&existing_image, [255, 0, 0]);
         write_tags_json(
             source,
@@ -2892,8 +3048,7 @@ mod tests {
                 "comics": {},
                 "books": {},
                 "images": {
-                    "Comics/One/001.png": { "starred": true },
-                    "Comics/One/002.png": { "starred": true }
+                    "Comics/One/001.png": { "starred": true }
                 }
             }),
         );
@@ -2909,11 +3064,9 @@ mod tests {
             },
         )
         .unwrap();
-        write_test_image(&future_image, [0, 255, 0]);
         build_test_library(source);
 
         assert_eq!(read_tag_flags(&existing_image), (false, false));
-        assert_eq!(read_tag_flags(&future_image), (true, false));
     }
 
     #[cfg(target_os = "macos")]

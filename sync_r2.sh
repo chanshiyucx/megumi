@@ -10,16 +10,19 @@ SYNC_STATE="$STATE_DIR/r2-sync.state.json"
 CUTOFF_MARKER="$STATE_DIR/r2-sync.cutoff"
 TAG_PATCHES="$STATE_DIR/tag-patches.json"
 LEGACY_TAG_PRUNES="$STATE_DIR/tag-prunes.json"
-TAGS_API_URL="${MEGUMI_TAGS_API_URL:-}"
+TAGS_API_URL="${MEGUMI_TAGS_API_URL:-https://megumi-tags.chanshiyucx.workers.dev}"
 
 # Fast mode tracks local changes so it does not need to list the large R2 bucket.
 COMMON_FLAGS=(
   --progress
-  --exclude ".megumi/**"
-  --exclude ".DS_Store"
   --log-file="$LOG"
   --log-level INFO
   --transfers 8
+)
+
+EXCLUDE_FLAGS=(
+  --exclude ".megumi/**"
+  --exclude ".DS_Store"
 )
 
 sync_tags_to_local() {
@@ -166,6 +169,7 @@ case "$MODE" in
       echo "   未找到同步状态；回退为上传最近 $MAX_AGE 新增/修改的资源"
       rclone copy "$LOCAL" "$REMOTE" \
         "${COMMON_FLAGS[@]}" \
+        "${EXCLUDE_FLAGS[@]}" \
         --checkers 16 \
         --no-traverse \
         --max-age "$MAX_AGE"
@@ -178,6 +182,7 @@ case "$MODE" in
     echo ""
     rclone sync "$LOCAL" "$REMOTE" \
       "${COMMON_FLAGS[@]}" \
+      "${EXCLUDE_FLAGS[@]}" \
       --checkers 32 \
       --fast-list
     resource_status=$?

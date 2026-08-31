@@ -72,7 +72,7 @@ function TableOfContents({
             <div
               key={img.filename}
               data-index={img.index}
-              className="w-[100px]"
+              className="w-25 shrink-0"
             >
               <GridImage
                 className="w-full"

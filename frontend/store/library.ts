@@ -8,6 +8,7 @@ import {
   type RemoteBookSource,
   type RemoteComicSource,
 } from '@/lib/manifest'
+import { fetchRemoteTabs } from '@/lib/remote-tabs'
 import {
   applyFileTags,
   bookTagTarget,
@@ -21,7 +22,11 @@ import {
 } from '@/lib/tag-actions'
 import type { RemoteTags } from '@/lib/tags'
 import { useUIStore } from '@/store/ui'
-import { useTabsStore } from '@/store/tabs'
+import {
+  hydrateTabsFromRemote,
+  useTabsStore,
+  type Tab,
+} from '@/store/tabs'
 import type {
   Author,
   Book,
@@ -270,24 +275,22 @@ function buildMaps(
   }
 }
 
-function pruneTabsForCatalog(
+function resolveTabForCatalog(
+  tabId: string,
   comics: Record<string, Comic>,
   books: Record<string, Book>,
   videos: Record<string, Video>,
-) {
-  const invalidTabIds = useTabsStore
-    .getState()
-    .tabs.filter((tab) => !comics[tab.id] && !books[tab.id] && !videos[tab.id])
-    .map((tab) => tab.id)
+): Tab | undefined {
+  const comic = comics[tabId]
+  if (comic) return { type: 'comic', id: comic.id, title: comic.title }
 
-  for (const tabId of invalidTabIds) {
-    useTabsStore.getState().removeTab(tabId)
-  }
+  const book = books[tabId]
+  if (book) return { type: 'book', id: book.id, title: book.title }
 
-  const activeTab = useTabsStore.getState().activeTab
-  if (activeTab && !comics[activeTab] && !books[activeTab] && !videos[activeTab]) {
-    useTabsStore.getState().setActiveTab('')
-  }
+  const video = videos[tabId]
+  if (video) return { type: 'video', id: video.id, title: video.title }
+
+  return undefined
 }
 
 function resolveCurrentResource(state: LibraryState): CurrentResource | null {
@@ -347,9 +350,15 @@ export const useLibraryStore = create<LibraryState>()(
           }
         })
         try {
-          const catalog = await fetchRemoteCatalog({
-            allowEmptyTagsFallback: !wasReady,
-          })
+          const [catalog, remoteTabs] = await Promise.all([
+            fetchRemoteCatalog({
+              allowEmptyTagsFallback: !wasReady,
+            }),
+            fetchRemoteTabs().catch((error) => {
+              console.error('Failed to fetch tabs:', error)
+              return null
+            }),
+          ])
           if (seq !== hydrateSeq) return
           latestTags = catalog.tags
           const maps = buildMaps(catalog, get(), wasReady)
@@ -366,7 +375,16 @@ export const useLibraryStore = create<LibraryState>()(
           if (!ui.selectedLibraryId || !maps.libraries[ui.selectedLibraryId]) {
             ui.setSelectedLibraryId(orderedLibraryIds[0] ?? null)
           }
-          pruneTabsForCatalog(maps.comics, maps.books, maps.videos)
+          if (remoteTabs) {
+            hydrateTabsFromRemote(remoteTabs, (tabId) =>
+              resolveTabForCatalog(
+                tabId,
+                maps.comics,
+                maps.books,
+                maps.videos,
+              ),
+            )
+          }
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error)
           console.error('Failed to fetch manifest:', error)

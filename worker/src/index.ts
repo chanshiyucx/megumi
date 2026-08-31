@@ -26,8 +26,25 @@ interface PatchTagsRequest {
   tags: FileTags
 }
 
+interface RemoteTabs {
+  version: 1
+  tabIds: string[]
+  updatedAt?: string
+}
+
+type PatchTabsRequest =
+  | { operation: 'open'; tabId: string }
+  | { operation: 'close'; tabId: string }
+  | { operation: 'move'; tabId: string; overTabId: string }
+  | { operation: 'initialize'; tabIds: string[] }
+
 const TAGS_KEY = '.megumi/tags.json'
+const TABS_KEY = '.megumi/tabs.json'
 const EMPTY_TAGS_ETAG = '"empty"'
+const EMPTY_TABS_ETAG = '"empty-tabs"'
+const MAX_TABS = 200
+const MAX_TAB_ID_LENGTH = 1024
+const MAX_TABS_WRITE_ATTEMPTS = 5
 const REVALIDATE_HEADERS = {
   'Cache-Control': 'private, no-cache',
 }
@@ -39,6 +56,11 @@ const EMPTY_TAGS: RemoteTags = {
   videos: {},
   images: {},
   chapters: {},
+}
+
+const EMPTY_TABS: RemoteTabs = {
+  version: 1,
+  tabIds: [],
 }
 
 const TARGET_COLLECTIONS: Record<
@@ -63,6 +85,7 @@ function corsHeaders(request: Request, env: Env) {
     Vary: 'Origin',
     'Access-Control-Allow-Methods': 'GET,PATCH,OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type,Authorization',
+    'Access-Control-Expose-Headers': 'ETag',
     'Access-Control-Max-Age': '86400',
   })
 
@@ -130,6 +153,52 @@ function normalizeFileTags(tags: FileTags): FileTags {
   if (tags.starred === true) normalized.starred = true
   if (tags.deleted === true) normalized.deleted = true
   return normalized
+}
+
+function normalizeTabId(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const tabId = value.trim()
+  if (!tabId || tabId.length > MAX_TAB_ID_LENGTH) return null
+  return tabId
+}
+
+function normalizeTabIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+
+  const seen = new Set<string>()
+  const tabIds: string[] = []
+  for (const valueId of value) {
+    const tabId = normalizeTabId(valueId)
+    if (!tabId || seen.has(tabId)) continue
+    seen.add(tabId)
+    tabIds.push(tabId)
+    if (tabIds.length === MAX_TABS) break
+  }
+  return tabIds
+}
+
+function emptyTabs(): RemoteTabs {
+  return { version: 1, tabIds: [] }
+}
+
+function normalizeTabs(value: unknown): RemoteTabs {
+  if (!value || typeof value !== 'object') return emptyTabs()
+  const source = value as Partial<RemoteTabs>
+  return {
+    version: 1,
+    tabIds: normalizeTabIds(source.tabIds),
+    updatedAt:
+      typeof source.updatedAt === 'string' ? source.updatedAt : undefined,
+  }
+}
+
+async function parseTabsObject(object: R2ObjectBody | null): Promise<RemoteTabs> {
+  if (!object) return emptyTabs()
+  try {
+    return normalizeTabs(JSON.parse(await object.text()))
+  } catch {
+    return emptyTabs()
+  }
 }
 
 async function parseTagsObject(object: R2ObjectBody | null): Promise<RemoteTags> {
@@ -272,6 +341,185 @@ async function handleTags(request: Request, env: Env) {
   })
 }
 
+function parseTabPatchRequest(value: unknown): PatchTabsRequest | null {
+  if (!value || typeof value !== 'object') return null
+  const source = value as Record<string, unknown>
+
+  if (source.operation === 'initialize') {
+    if (!Array.isArray(source.tabIds) || source.tabIds.length > MAX_TABS) {
+      return null
+    }
+    const tabIds = normalizeTabIds(source.tabIds)
+    if (tabIds.length !== source.tabIds.length) return null
+    return { operation: 'initialize', tabIds }
+  }
+
+  const tabId = normalizeTabId(source.tabId)
+  if (!tabId) return null
+
+  if (source.operation === 'open' || source.operation === 'close') {
+    return { operation: source.operation, tabId }
+  }
+
+  if (source.operation === 'move') {
+    const overTabId = normalizeTabId(source.overTabId)
+    if (!overTabId) return null
+    return { operation: 'move', tabId, overTabId }
+  }
+
+  return null
+}
+
+function parseTabPatchRequests(value: unknown): PatchTabsRequest[] | null {
+  const values = Array.isArray(value) ? value : [value]
+  if (!values.length) return null
+  const patches = values.map(parseTabPatchRequest)
+  return patches.every((patch): patch is PatchTabsRequest => patch !== null)
+    ? patches
+    : null
+}
+
+function applyTabPatch(
+  tabs: RemoteTabs,
+  patch: Exclude<PatchTabsRequest, { operation: 'initialize' }>,
+) {
+  if (patch.operation === 'open') {
+    if (tabs.tabIds.includes(patch.tabId) || tabs.tabIds.length >= MAX_TABS) {
+      return false
+    }
+    tabs.tabIds.push(patch.tabId)
+    return true
+  }
+
+  const tabIndex = tabs.tabIds.indexOf(patch.tabId)
+  if (patch.operation === 'close') {
+    if (tabIndex === -1) return false
+    tabs.tabIds.splice(tabIndex, 1)
+    return true
+  }
+
+  const overIndex = tabs.tabIds.indexOf(patch.overTabId)
+  if (tabIndex === -1 || overIndex === -1 || tabIndex === overIndex) {
+    return false
+  }
+  const [tabId] = tabs.tabIds.splice(tabIndex, 1)
+  tabs.tabIds.splice(overIndex, 0, tabId)
+  return true
+}
+
+async function mutateTabs(
+  env: Env,
+  patches: PatchTabsRequest[],
+): Promise<{ tabs: RemoteTabs; etag: string; initialized: boolean }> {
+  for (let attempt = 0; attempt < MAX_TABS_WRITE_ATTEMPTS; attempt += 1) {
+    const object = await env.MEGUMI_BUCKET.get(TABS_KEY)
+    const tabs = await parseTabsObject(object)
+    let initialized = object !== null
+    let changed = false
+
+    for (const patch of patches) {
+      if (patch.operation === 'initialize') {
+        if (initialized) continue
+        tabs.tabIds = [...patch.tabIds]
+        initialized = true
+        changed = true
+        continue
+      }
+      changed = applyTabPatch(tabs, patch) || changed
+    }
+
+    if (!changed) {
+      return {
+        tabs,
+        etag: object?.httpEtag ?? EMPTY_TABS_ETAG,
+        initialized,
+      }
+    }
+
+    tabs.updatedAt = new Date().toISOString()
+    const written = await env.MEGUMI_BUCKET.put(
+      TABS_KEY,
+      JSON.stringify(tabs),
+      {
+        onlyIf: object
+          ? { etagMatches: object.etag }
+          : { etagDoesNotMatch: '*' },
+        httpMetadata: { contentType: 'application/json; charset=utf-8' },
+      },
+    )
+    if (written) {
+      return { tabs, etag: written.httpEtag, initialized: true }
+    }
+  }
+
+  throw new Error('Failed to update tabs after concurrent writes')
+}
+
+async function handleTabs(request: Request, env: Env) {
+  if (request.method === 'GET') {
+    const object = await env.MEGUMI_BUCKET.get(TABS_KEY)
+    const etag = object?.httpEtag ?? EMPTY_TABS_ETAG
+    const headers = { ...REVALIDATE_HEADERS, ETag: etag }
+    if (etagMatches(request.headers.get('If-None-Match'), etag)) {
+      const responseHeaders = corsHeaders(request, env)
+      for (const [key, value] of new Headers(headers)) {
+        responseHeaders.set(key, value)
+      }
+      return new Response(null, { status: 304, headers: responseHeaders })
+    }
+    const tabs = await parseTabsObject(object)
+    return jsonResponse(
+      request,
+      env,
+      { ...tabs, initialized: object !== null },
+      { headers },
+    )
+  }
+
+  if (request.method !== 'PATCH') {
+    return jsonResponse(
+      request,
+      env,
+      { error: 'Method not allowed' },
+      { status: 405, headers: { Allow: 'GET,PATCH,OPTIONS' } },
+    )
+  }
+
+  let patches: PatchTabsRequest[] | null = null
+  try {
+    patches = parseTabPatchRequests(await request.json())
+  } catch {
+    patches = null
+  }
+
+  if (!patches) {
+    return jsonResponse(request, env, { error: 'Invalid request' }, { status: 400 })
+  }
+
+  try {
+    const result = await mutateTabs(env, patches)
+    return jsonResponse(
+      request,
+      env,
+      { ...result.tabs, initialized: result.initialized },
+      {
+        headers: {
+          'Cache-Control': 'no-store',
+          ETag: result.etag,
+        },
+      },
+    )
+  } catch (error) {
+    console.error('Failed to update tabs:', error)
+    return jsonResponse(
+      request,
+      env,
+      { error: 'Concurrent update conflict' },
+      { status: 409 },
+    )
+  }
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url)
@@ -282,6 +530,10 @@ export default {
 
     if (url.pathname === '/tags') {
       return handleTags(request, env)
+    }
+
+    if (url.pathname === '/tabs') {
+      return handleTabs(request, env)
     }
 
     return jsonResponse(request, env, { error: 'Not found' }, { status: 404 })

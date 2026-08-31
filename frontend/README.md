@@ -23,6 +23,11 @@ Star/delete state is read and written through the tags Worker. Set
 `https://megumi-tags.<account>.workers.dev`. The Worker stores state in
 `.megumi/tags.json` in R2.
 
+The same Worker stores the ordered list of open tabs in `.megumi/tabs.json`.
+The active tab remains device-local and is not written to R2. On first load
+after this feature is deployed, an existing `megumi-tabs` local-storage value
+is imported only when the remote tab state has not been initialized yet.
+
 For local development against the isolated `megumi-dev` R2 bucket, switch both
 URLs together:
 

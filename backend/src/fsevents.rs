@@ -73,6 +73,9 @@ fn record_recursive_rescan(root: &Path, path: &Path, batch: &mut ChangeBatch) {
         return;
     };
     let parts = normal_parts(relative);
+    if is_book_images_path(&parts) {
+        return;
+    }
     if parts.iter().any(|name| is_managed_or_ignored(name)) {
         return;
     }
@@ -117,6 +120,9 @@ fn record_path_change(root: &Path, path: &Path, batch: &mut ChangeBatch) {
     if parts.is_empty() {
         return;
     }
+    if is_book_images_path(&parts) {
+        return;
+    }
     if parts.iter().any(|name| is_managed_or_ignored(name)) {
         return;
     }
@@ -138,6 +144,10 @@ fn normal_parts(path: &Path) -> Vec<String> {
 
 fn is_managed_or_ignored(name: &str) -> bool {
     name.starts_with('.') || matches!(name, "thumbnail" | "manifests" | "manifest.json")
+}
+
+fn is_book_images_path(parts: &[String]) -> bool {
+    parts.get(2).is_some_and(|name| name == "images")
 }
 
 #[cfg(test)]
@@ -179,7 +189,24 @@ mod tests {
         let root = Path::new("/library");
         let mut batch = ChangeBatch::default();
         record_path_change(root, Path::new("/library/Books/.DS_Store"), &mut batch);
-        record_path_change(root, Path::new("/library/Books/Author/.DS_Store"), &mut batch);
+        record_path_change(
+            root,
+            Path::new("/library/Books/Author/.DS_Store"),
+            &mut batch,
+        );
+        assert!(batch.unit_keys.is_empty());
+        assert!(!batch.requires_full_scan);
+    }
+
+    #[test]
+    fn ignores_book_image_changes() {
+        let root = Path::new("/library");
+        let mut batch = ChangeBatch::default();
+        record_path_change(
+            root,
+            Path::new("/library/Books/Author/images/1.jpg"),
+            &mut batch,
+        );
         assert!(batch.unit_keys.is_empty());
         assert!(!batch.requires_full_scan);
     }

@@ -26,6 +26,7 @@ const TAGS_FILE: &str = ".megumi/tags.json";
 const TAG_PATCHES_FILE: &str = ".megumi/tag-patches.json";
 const BUILD_LOCK_FILE: &str = ".megumi/build.lock";
 const THUMBNAIL_DIR: &str = "thumbnail";
+const BOOK_IMAGES_DIR: &str = "images";
 const SCHEMA_VERSION: u32 = 6;
 const THUMBNAIL_WIDTH: u32 = 256;
 const THUMBNAIL_QUALITY: u8 = 72;
@@ -876,7 +877,10 @@ fn discover_units(
                     Some(contents) => contents,
                     None => inspect_directory(&unit_dir)?,
                 };
-                if !contents.directories.is_empty() || !contents.videos.is_empty() {
+                if contents.directories.iter().any(|directory| {
+                    contents.books.is_empty() || !is_book_images_directory(directory)
+                }) || !contents.videos.is_empty()
+                {
                     bail!(
                         "content directory contains nested directories: {}",
                         unit_dir.display()
@@ -962,7 +966,10 @@ fn cached_author_matches_source(
     contents: &DirectoryContents,
     cached: &state::CachedUnit,
 ) -> Result<bool> {
-    if !contents.directories.is_empty()
+    if contents
+        .directories
+        .iter()
+        .any(|directory| !is_book_images_directory(directory))
         || !contents.images.is_empty()
         || !contents.videos.is_empty()
     {
@@ -2577,6 +2584,12 @@ fn is_ignored_entry(path: &Path) -> bool {
         || name == MANIFEST_FILE
 }
 
+fn is_book_images_directory(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name == BOOK_IMAGES_DIR)
+}
+
 fn display_name(path: &Path) -> String {
     path.file_name()
         .and_then(|name| name.to_str())
@@ -2890,6 +2903,22 @@ mod tests {
         let authors = manifest["libraries"][0]["authors"].as_array().unwrap();
         assert_eq!(authors.len(), 1);
         assert_eq!(authors[0]["name"], "Author");
+    }
+
+    #[test]
+    fn book_images_directory_is_ignored() {
+        let temp = TestDir::new();
+        let author = temp.0.join("Books/Author");
+        fs::create_dir_all(author.join(BOOK_IMAGES_DIR)).unwrap();
+        fs::write(author.join("Book.txt"), "content\n[](1.jpg)").unwrap();
+        fs::write(author.join(BOOK_IMAGES_DIR).join("1.jpg"), "not processed").unwrap();
+
+        build_test_library(&temp.0);
+
+        let database = state::StateDb::open(&temp.0).unwrap();
+        let state = database.load_build_state().unwrap();
+        assert!(state.files.contains_key("Books/Author/Book.txt"));
+        assert!(!state.files.contains_key("Books/Author/images/1.jpg"));
     }
 
     #[test]

@@ -21,8 +21,50 @@ const ReaderPadding = {
 const TOP_OVERSCAN_PX = 800
 const BOTTOM_OVERSCAN_PX = 200
 const RESIZE_ESTIMATE_DELAY_MS = 120
+const BOOK_IMAGE_LINE_PATTERN = /^\s*\[\]\(([^/\\]+)\)\s*$/
 
-function BookLine({ line }: { line: string }) {
+function parseBookImageFilename(line: string): string | null {
+  const filename = BOOK_IMAGE_LINE_PATTERN.exec(line)?.[1].trim()
+  if (!filename || filename.includes('..')) return null
+  return filename
+}
+
+function getBookImageBaseUrl(bookUrl: string): string | null {
+  try {
+    return new URL('images/', bookUrl).toString()
+  } catch {
+    return null
+  }
+}
+
+interface BookLineProps {
+  imageBaseUrl: string | null
+  line: string
+}
+
+function BookLine({ imageBaseUrl, line }: BookLineProps) {
+  const imageFilename = parseBookImageFilename(line)
+  const imageUrl =
+    imageBaseUrl && imageFilename
+      ? new URL(encodeURIComponent(imageFilename), imageBaseUrl).toString()
+      : null
+  const [failedImageUrl, setFailedImageUrl] = useState<string | null>(null)
+
+  if (imageUrl && failedImageUrl !== imageUrl) {
+    return (
+      <figure className="mx-auto w-full px-4 pb-4">
+        <img
+          src={imageUrl}
+          alt={imageFilename ?? '小说插图'}
+          className="mx-auto max-h-[75vh] max-w-full rounded-sm object-contain"
+          loading="lazy"
+          decoding="async"
+          onError={() => setFailedImageUrl(imageUrl)}
+        />
+      </figure>
+    )
+  }
+
   return (
     <p className="text-text mx-auto w-full px-4 pb-4 font-serif leading-relaxed wrap-break-word whitespace-pre-wrap">
       {line}
@@ -63,6 +105,14 @@ function estimateLineHeights(
   )
 
   return lines.map((line) => {
+    if (parseBookImageFilename(line)) {
+      const estimatedImageHeight = Math.min(
+        contentWidth * 0.75,
+        window.innerHeight * 0.75,
+      )
+      return Math.ceil(estimatedImageHeight + lineHeight)
+    }
+
     let measuredWidth = line.length * fullWidthCharacter
     for (let index = 0; index < line.length; index += 1) {
       const code = line.charCodeAt(index)
@@ -78,6 +128,7 @@ function estimateLineHeights(
 }
 
 interface VirtualBookProps {
+  imageBaseUrl: string | null
   initialTopMostItemIndex: number
   lines: readonly string[]
   rangeChanged: (range: ListRange) => void
@@ -85,6 +136,7 @@ interface VirtualBookProps {
 }
 
 function VirtualBook({
+  imageBaseUrl,
   initialTopMostItemIndex,
   lines,
   rangeChanged,
@@ -138,7 +190,9 @@ function VirtualBook({
           heightEstimates={estimation.heights}
           initialTopMostItemIndex={initialTopMostItemIndex}
           rangeChanged={rangeChanged}
-          itemContent={(_index, line) => <BookLine line={line} />}
+          itemContent={(_index, line) => (
+            <BookLine imageBaseUrl={imageBaseUrl} line={line} />
+          )}
           components={ReaderPadding}
           increaseViewportBy={{
             top: TOP_OVERSCAN_PX,
@@ -151,7 +205,7 @@ function VirtualBook({
         className="invisible absolute inset-0 overflow-y-scroll"
       >
         <div ref={probeRef}>
-          <BookLine line="测量" />
+          <BookLine imageBaseUrl={imageBaseUrl} line="测量" />
         </div>
       </div>
     </div>
@@ -285,6 +339,8 @@ export function BookReader({
     )
   }
 
+  const imageBaseUrl = getBookImageBaseUrl(book.path)
+
   return (
     <div className="relative flex h-full w-full flex-col overflow-hidden">
       {content.chapters && (
@@ -368,6 +424,7 @@ export function BookReader({
 
       <VirtualBook
         key={bookId}
+        imageBaseUrl={imageBaseUrl}
         virtuosoRef={virtuosoRef}
         lines={lines}
         initialTopMostItemIndex={currentIndex}

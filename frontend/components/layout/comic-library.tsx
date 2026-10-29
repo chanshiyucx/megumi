@@ -1,24 +1,11 @@
-import {
-  ArrowDownAZ,
-  CalendarArrowDown,
-  CalendarArrowUp,
-  Grid2x2,
-  Rows2,
-  Star,
-  StepForward,
-  Trash2,
-} from 'lucide-react'
-import { useRef } from 'react'
+import { ArrowDownAZ, CalendarArrowDown, CalendarArrowUp } from 'lucide-react'
 import { VirtuosoGrid } from 'react-virtuoso'
 import { useShallow } from 'zustand/react/shallow'
 import { Button } from '@/components/ui/button'
-import { ComicStrip, type ComicStripHandle } from '@/components/ui/comic-strip'
-import { GridItem } from '@/components/ui/grid-item'
-import { GridImage, ImagePreviewOverlay } from '@/components/ui/image-view'
-import { useComicReadingSession } from '@/hooks/use-comic-reading-session'
+import { COVER_GRID_CLASS, GridItem } from '@/components/ui/grid-item'
 import { usePanelNav } from '@/hooks/use-panel-nav'
 import { selectOrderedComicsForLibrary } from '@/lib/library-queries'
-import { cn } from '@/lib/style'
+import { cn, LIST_COLUMN_CLASS } from '@/lib/style'
 import { useLibraryStore } from '@/store/library'
 import { useProgressStore } from '@/store/progress'
 import { useUIStore } from '@/store/ui'
@@ -26,9 +13,9 @@ import type {
   Comic,
   ComicLibrarySortMode,
   FileTags,
-  Image,
   Library,
 } from '@/types/library'
+import { ComicPanel } from './comic-panel'
 
 const NEXT_SORT_MODE: Record<ComicLibrarySortMode, ComicLibrarySortMode> = {
   'created-asc': 'created-desc',
@@ -43,7 +30,7 @@ interface ComicItemProps {
   onTags: (id: string, tags: FileTags) => Promise<void>
 }
 
-function ComicItem({
+export function ComicItem({
   comic,
   isSelected,
   onClick,
@@ -75,12 +62,9 @@ interface ComicLibraryProps {
 }
 
 export function ComicLibrary({ selectedLibrary }: ComicLibraryProps) {
-  const stripRef = useRef<ComicStripHandle>(null)
   const { readerVisible, middleClass, readerClass, openReader } = usePanelNav()
 
-  const viewMode = useUIStore((s) => s.comicLibraryViewMode)
   const sortMode = useUIStore((s) => s.comicLibrarySortMode)
-  const setViewMode = useUIStore((s) => s.setComicLibraryViewMode)
   const setSortMode = useUIStore((s) => s.setComicLibrarySortMode)
   const setNavStatus = useUIStore((s) => s.setNavStatus)
   const updateComicTags = useLibraryStore((s) => s.updateComicTags)
@@ -94,55 +78,16 @@ export function ComicLibrary({ selectedLibrary }: ComicLibraryProps) {
     ),
   )
 
-  const toggleViewMode = () => {
-    setViewMode(viewMode === 'grid' ? 'scroll' : 'grid')
-  }
-
   const cycleSortMode = () => {
     setSortMode(NEXT_SORT_MODE[sortMode])
   }
 
-  const {
-    comic,
-    images,
-    comicImageStatus,
-    currentIndex,
-    previewIndex,
-    setPreviewIndex,
-    previewActive,
-    jumpTo,
-    trackStripIndex,
-    setHoveredIndex,
-    closePreview,
-    continueReading,
-    toggleComicDeleted,
-    toggleComicStarred,
-    updateComicImageTags,
-  } = useComicReadingSession({
-    comicId,
-    stripRef,
-    surface: {
-      kind: 'library',
-      readerVisible,
-      viewMode,
-      onToggleViewMode: toggleViewMode,
-    },
-  })
-
   const handleSelectComic = (id: string) => {
-    if (id !== comic?.id) {
+    if (id !== comicId) {
       setNavStatus(selectedLibrary.id, { comicId: id })
     }
     openReader()
   }
-
-  const pageStatusText = (() => {
-    if (!comic) return ''
-    if (images.length) return `${currentIndex + 1} / ${images.length}`
-    if (comicImageStatus === 'failed') return '加载失败'
-    if (comicImageStatus === 'empty') return '暂无图片'
-    return '加载中'
-  })()
 
   const renderComicItem = (_index: number, comic: Comic) => (
     <ComicItem
@@ -153,21 +98,15 @@ export function ComicLibrary({ selectedLibrary }: ComicLibraryProps) {
     />
   )
 
-  const renderGridImage = (_index: number, img: Image) => (
-    <GridImage
-      comicId={comicId}
-      image={img}
-      isSelected={currentIndex === img.index}
-      tagOnTap
-      onClick={jumpTo}
-      onDoubleClick={setPreviewIndex}
-      onTags={updateComicImageTags}
-    />
-  )
-
   return (
     <div className="flex h-full w-full">
-      <div className={cn('min-h-0 flex-1 flex-col border-r', middleClass)}>
+      <div
+        className={cn(
+          'min-h-0 flex-col border-r',
+          LIST_COLUMN_CLASS,
+          middleClass,
+        )}
+      >
         <div className="bg-base text-subtle flex h-8 items-center justify-between border-b px-3 text-xs">
           <Button
             aria-label="切换漫画排序"
@@ -189,102 +128,16 @@ export function ComicLibrary({ selectedLibrary }: ComicLibraryProps) {
             className="flex-1"
             data={comics}
             itemContent={renderComicItem}
-            listClassName="grid grid-cols-[repeat(auto-fill,minmax(128px,1fr))]"
+            listClassName={COVER_GRID_CLASS}
             increaseViewportBy={600}
           />
         </div>
       </div>
 
-      <div className={cn('min-h-0 flex-1 flex-col', readerClass)}>
-        <div className="bg-base text-subtle relative grid h-8 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 overflow-hidden border-b px-3 text-xs">
-          <div className="flex shrink-0 gap-2">
-            <Button
-              className="h-6 w-6"
-              onClick={toggleViewMode}
-              title={viewMode === 'grid' ? '原图预览' : '网格模式'}
-            >
-              {viewMode === 'grid' ? (
-                <Rows2 className="h-4 w-4" />
-              ) : (
-                <Grid2x2 className="h-4 w-4" />
-              )}
-            </Button>
-            <Button
-              className="h-6 w-6"
-              onClick={continueReading}
-              title="继续阅读"
-            >
-              <StepForward className="h-4 w-4" />
-            </Button>
-            {comic && (
-              <>
-                <Button
-                  className="h-6 w-6"
-                  onClick={toggleComicDeleted}
-                  title="标记删除"
-                >
-                  <Trash2
-                    className={cn('h-4 w-4', comic.deleted && 'text-subtle/40')}
-                  />
-                </Button>
-                <Button
-                  className="h-6 w-6"
-                  onClick={toggleComicStarred}
-                  title="标记收藏"
-                >
-                  <Star
-                    className={cn(
-                      'h-4 w-4',
-                      comic.starred && 'text-love fill-gold/80',
-                    )}
-                  />
-                </Button>
-              </>
-            )}
-          </div>
-
-          <h3 className="min-w-0 truncate text-left" title={comic?.title}>
-            {comic?.title}
-          </h3>
-
-          <span className="shrink-0 whitespace-nowrap">{pageStatusText}</span>
-        </div>
-        {viewMode === 'grid' ? (
-          <div aria-label="图片列表" className="contents">
-            <VirtuosoGrid
-              key={comicId}
-              className="flex-1"
-              data={images}
-              itemContent={renderGridImage}
-              listClassName="grid grid-cols-[repeat(auto-fill,minmax(128px,1fr))]"
-              increaseViewportBy={600}
-            />
-          </div>
-        ) : (
-          <ComicStrip
-            key={comicId}
-            ref={stripRef}
-            className="h-0 flex-auto"
-            comicId={comicId}
-            images={images}
-            initialIndex={currentIndex}
-            orientation="vertical"
-            onCurrentIndexChange={trackStripIndex}
-            onHover={setHoveredIndex}
-            onDoubleClick={setPreviewIndex}
-            onTags={updateComicImageTags}
-          />
-        )}
-      </div>
-
-      <ImagePreviewOverlay
+      <ComicPanel
         comicId={comicId}
-        images={images}
-        active={previewActive}
-        index={previewIndex}
-        onIndexChange={setPreviewIndex}
-        onClose={closePreview}
-        onTags={updateComicImageTags}
+        className={readerClass}
+        readerVisible={readerVisible}
       />
     </div>
   )

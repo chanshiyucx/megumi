@@ -14,7 +14,12 @@ import { SHORTCUTS } from '@/lib/shortcuts'
 import { useLibraryStore } from '@/store/library'
 import { useProgressStore } from '@/store/progress'
 import { useTabsStore } from '@/store/tabs'
-import { LibraryType, type BookContent, type Chapter } from '@/types/library'
+import {
+  LibraryType,
+  type BookContent,
+  type Chapter,
+  type JumpRequest,
+} from '@/types/library'
 
 const EMPTY_LINES: string[] = []
 
@@ -26,11 +31,14 @@ interface BookData {
 interface UseBookReadingSessionOptions {
   bookId: string
   surface: 'library' | 'tab'
+  // Moves the reader to a line once that book's content is loaded.
+  jumpRequest?: JumpRequest
 }
 
 export function useBookReadingSession({
   bookId,
   surface,
+  jumpRequest,
 }: UseBookReadingSessionOptions) {
   const virtuosoRef = useRef<VirtuosoHandle>(null)
   const [isTocCollapsed, setTocCollapsed] = useState(true)
@@ -62,6 +70,7 @@ export function useBookReadingSession({
   const { isLock, lockScroll } = useScrollLock()
   const throttledUpdateProgress = useThrottledProgress(updateBookProgress)
   const refreshTokenRef = useRef({ bookId, token: bookRefreshToken })
+  const handledJumpRef = useRef(0)
 
   const jumpTo = (targetIndex?: number) => {
     if (!book || !content) return
@@ -81,6 +90,13 @@ export function useBookReadingSession({
     })
   }
   const jumpToFn = useEffectEvent(jumpTo)
+
+  useEffect(() => {
+    if (!jumpRequest || jumpRequest.id !== bookId) return
+    if (handledJumpRef.current === jumpRequest.seq || !content) return
+    handledJumpRef.current = jumpRequest.seq
+    jumpToFn(jumpRequest.index)
+  }, [bookId, content, jumpRequest])
 
   useEffect(() => {
     if (!book?.path) return

@@ -8,6 +8,12 @@ import {
   type RemoteBookSource,
   type RemoteComicSource,
 } from '@/lib/manifest'
+import {
+  bookIdForChapterKey,
+  collectFavoriteChapterBookIds,
+  collectFavoriteImageComicIds,
+  comicIdForImageKey,
+} from '@/lib/favorites'
 import { fetchRemoteTabs } from '@/lib/remote-tabs'
 import {
   applyFileTags,
@@ -27,17 +33,18 @@ import {
   useTabsStore,
   type Tab,
 } from '@/store/tabs'
-import type {
-  Author,
-  Book,
-  Chapter,
-  Comic,
-  ComicImage,
-  FileTags,
-  Image,
-  Library,
-  LibraryType,
-  Video,
+import {
+  FAVORITES_LIBRARY_ID,
+  type Author,
+  type Book,
+  type Chapter,
+  type Comic,
+  type ComicImage,
+  type FileTags,
+  type Image,
+  type Library,
+  type LibraryType,
+  type Video,
 } from '@/types/library'
 
 const collator = new Intl.Collator(undefined, {
@@ -78,6 +85,10 @@ interface LibraryState {
   bookSources: Record<string, RemoteBookSource>
   bookChapterStatus: Record<string, LoadStatus>
   bookRefreshTokens: Record<string, number>
+  // Comics / books that hold at least one starred page / chapter, from the
+  // tags; the favorites view loads their details to list those.
+  favoriteImageComicIds: string[]
+  favoriteChapterBookIds: string[]
   loadStatus: LoadStatus
   loadError?: string
   hydrate: () => Promise<void>
@@ -272,6 +283,8 @@ function buildMaps(
     comicSources: catalog.comicSources,
     bookSources: catalog.bookSources,
     bookChapterStatus,
+    favoriteImageComicIds: collectFavoriteImageComicIds(catalog.tags, comics),
+    favoriteChapterBookIds: collectFavoriteChapterBookIds(catalog.tags, books),
   }
 }
 
@@ -301,6 +314,22 @@ function resolveCurrentResource(state: LibraryState): CurrentResource | null {
   const ui = useUIStore.getState()
   const selectedLibraryId = ui.selectedLibraryId
   if (!selectedLibraryId) return null
+
+  if (selectedLibraryId === FAVORITES_LIBRARY_ID) {
+    const { category, comicId, imageKey, bookId, chapterKey, videoId } =
+      ui.favoritesNav
+    if (category === 'comic' && comicId) return { type: 'comic', id: comicId }
+    if (category === 'image' && imageKey) {
+      const id = comicIdForImageKey(imageKey, state.comics)
+      return id ? { type: 'comic', id } : null
+    }
+    if (category === 'book' && bookId) return { type: 'book', id: bookId }
+    if (category === 'chapter' && chapterKey) {
+      return { type: 'book', id: bookIdForChapterKey(chapterKey) }
+    }
+    if (category === 'video' && videoId) return { type: 'video', id: videoId }
+    return null
+  }
 
   const library = state.libraries[selectedLibraryId]
   const navStatus = ui.navStatus[selectedLibraryId]
@@ -335,6 +364,8 @@ export const useLibraryStore = create<LibraryState>()(
     bookSources: {},
     bookChapterStatus: {},
     bookRefreshTokens: {},
+    favoriteImageComicIds: [],
+    favoriteChapterBookIds: [],
     loadStatus: 'idle',
 
     hydrate: async () => {
@@ -372,7 +403,10 @@ export const useLibraryStore = create<LibraryState>()(
           })
 
           const ui = useUIStore.getState()
-          if (!ui.selectedLibraryId || !maps.libraries[ui.selectedLibraryId]) {
+          if (
+            ui.selectedLibraryId !== FAVORITES_LIBRARY_ID &&
+            (!ui.selectedLibraryId || !maps.libraries[ui.selectedLibraryId])
+          ) {
             ui.setSelectedLibraryId(orderedLibraryIds[0] ?? null)
           }
           if (remoteTabs) {
@@ -552,6 +586,9 @@ export const useLibraryStore = create<LibraryState>()(
               (item) => item.path === imageKey,
             )
             if (image) applyFileTags(image, tags)
+            if (tags.starred && !state.favoriteImageComicIds.includes(comicId)) {
+              state.favoriteImageComicIds.push(comicId)
+            }
           }),
         rollback: () =>
           set((state) => {
@@ -581,6 +618,9 @@ export const useLibraryStore = create<LibraryState>()(
               (item) => item.lineIndex === lineIndex,
             )
             if (chapter) applyFileTags(chapter, tags)
+            if (tags.starred && !state.favoriteChapterBookIds.includes(bookId)) {
+              state.favoriteChapterBookIds.push(bookId)
+            }
           }),
         rollback: () =>
           set((state) => {

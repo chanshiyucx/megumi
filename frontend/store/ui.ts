@@ -7,6 +7,8 @@ import {
 import { immer } from 'zustand/middleware/immer'
 import type {
   ComicLibrarySortMode,
+  FavoriteCategory,
+  FavoritesNavStatus,
   LibraryNavStatus,
 } from '@/types/library'
 
@@ -22,6 +24,7 @@ interface UIState {
   comicLibrarySortMode: ComicLibrarySortMode
   selectedLibraryId: string | null
   navStatus: Record<string, LibraryNavStatus>
+  favoritesNav: FavoritesNavStatus
   toggleSidebar: () => void
   toggleMiddle: () => void
   setSidebarCollapsed: (value: boolean) => void
@@ -32,6 +35,7 @@ interface UIState {
   setComicLibrarySortMode: (sortMode: ComicLibrarySortMode) => void
   setSelectedLibraryId: (id: string | null) => void
   setNavStatus: (libraryId: string, status: LibraryNavStatus) => void
+  setFavoritesNav: (status: Partial<FavoritesNavStatus>) => void
 }
 
 interface PersistedUIState {
@@ -43,6 +47,7 @@ interface PersistedUIState {
   comicLibrarySortMode: ComicLibrarySortMode
   selectedLibraryId: string | null
   navStatus: Record<string, LibraryNavStatus>
+  favoritesNav: FavoritesNavStatus
 }
 
 const sanitizeThemeMode = (theme: unknown): ThemeMode =>
@@ -57,6 +62,27 @@ const sanitizeComicLibrarySortMode = (
 ): ComicLibrarySortMode => {
   if (sortMode === 'created-desc' || sortMode === 'title') return sortMode
   return 'created-asc'
+}
+
+const FAVORITE_CATEGORIES: FavoriteCategory[] = [
+  'comic',
+  'image',
+  'book',
+  'chapter',
+  'video',
+]
+
+const sanitizeFavoritesNav = (value: unknown): FavoritesNavStatus => {
+  const status =
+    value && typeof value === 'object'
+      ? (value as Partial<FavoritesNavStatus>)
+      : {}
+  return {
+    ...status,
+    category: FAVORITE_CATEGORIES.includes(status.category as FavoriteCategory)
+      ? (status.category as FavoriteCategory)
+      : 'comic',
+  }
 }
 
 const applyTheme = (theme: ThemeMode) => {
@@ -99,6 +125,7 @@ export const useUIStore = create<UIState>()(
         comicLibrarySortMode: 'created-asc',
         selectedLibraryId: null,
         navStatus: {},
+        favoritesNav: { category: 'comic' },
         toggleSidebar: () =>
           set((state) => {
             state.isSidebarCollapsed = !state.isSidebarCollapsed
@@ -130,6 +157,10 @@ export const useUIStore = create<UIState>()(
               ...status,
             }
           }),
+        setFavoritesNav: (status) =>
+          set((state) => {
+            state.favoritesNav = { ...state.favoritesNav, ...status }
+          }),
       })),
       {
         name: 'megumi-ui',
@@ -143,7 +174,16 @@ export const useUIStore = create<UIState>()(
           comicLibrarySortMode: state.comicLibrarySortMode,
           selectedLibraryId: state.selectedLibraryId,
           navStatus: state.navStatus,
+          favoritesNav: state.favoritesNav,
         }),
+        merge: (persisted, current) => {
+          const state = (persisted ?? {}) as Partial<PersistedUIState>
+          return {
+            ...current,
+            ...state,
+            favoritesNav: sanitizeFavoritesNav(state.favoritesNav),
+          }
+        },
       },
     ),
   ),

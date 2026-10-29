@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { usePanelNav } from '@/hooks/use-panel-nav'
 import { selectOrderedBooksForAuthor } from '@/lib/library-queries'
-import { cn } from '@/lib/style'
+import { cn, LIST_COLUMN_CLASS } from '@/lib/style'
 import { useLibraryStore } from '@/store/library'
 import { useProgressStore } from '@/store/progress'
 import { useUIStore } from '@/store/ui'
@@ -116,13 +116,8 @@ export function BookLibrary({ selectedLibrary }: BookLibraryProps) {
 
   return (
     <div className="flex h-full w-full">
-      <div
-        className={cn(
-          'min-h-0 w-full flex-1 md:w-auto md:flex-none',
-          middleClass,
-        )}
-      >
-        <div className="flex min-w-0 flex-1 flex-col border-r md:w-56 md:flex-none">
+      <div className={cn('min-h-0', LIST_COLUMN_CLASS, middleClass)}>
+        <div className="flex min-w-0 flex-1 flex-col border-r">
           <div className="bg-base text-subtle border-b px-3 py-2 text-xs">
             AUTHORS ({authors.length})
           </div>
@@ -138,7 +133,7 @@ export function BookLibrary({ selectedLibrary }: BookLibraryProps) {
           </ScrollArea>
         </div>
 
-        <div className="flex min-w-0 flex-1 flex-col border-r md:w-56 md:flex-none">
+        <div className="flex min-w-0 flex-1 flex-col border-r">
           <div className="bg-base text-subtle border-b px-3 py-2 text-xs">
             BOOKS ({books.length})
           </div>

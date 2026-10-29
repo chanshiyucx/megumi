@@ -11,7 +11,7 @@ import { Spinner } from '@/components/ui/spinner'
 import { useBookReadingSession } from '@/hooks/use-book-reading-session'
 import { useClickOutside } from '@/hooks/use-click-outside'
 import { cn } from '@/lib/style'
-import type { Chapter } from '@/types/library'
+import type { Chapter, JumpRequest } from '@/types/library'
 
 const ReaderPadding = {
   Header: () => <div className="h-16" />,
@@ -294,12 +294,14 @@ interface BookReaderProps {
   bookId: string
   surface: 'library' | 'tab'
   showReading?: boolean
+  jumpRequest?: JumpRequest
 }
 
 export function BookReader({
   bookId,
   surface,
   showReading = false,
+  jumpRequest,
 }: BookReaderProps) {
   const {
     book,
@@ -320,7 +322,7 @@ export function BookReader({
     toggleBookDeleted,
     toggleBookStarred,
     toggleChapterStarred,
-  } = useBookReadingSession({ bookId, surface })
+  } = useBookReadingSession({ bookId, surface, jumpRequest })
 
   if (!book) return null
 

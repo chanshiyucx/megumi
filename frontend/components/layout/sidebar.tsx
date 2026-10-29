@@ -12,7 +12,7 @@ import {
   useSortable,
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
-import { BookImage, Clapperboard, LibraryBig } from "lucide-react";
+import { BookImage, Clapperboard, LibraryBig, Star } from "lucide-react";
 import { ThemeSwitcher } from "@/components/layout/theme-switcher";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -20,7 +20,11 @@ import { usePanelNav } from "@/hooks/use-panel-nav";
 import { cn } from "@/lib/style";
 import { useLibraryStore } from "@/store/library";
 import { useUIStore } from "@/store/ui";
-import { LibraryType, type Library } from "@/types/library";
+import {
+  FAVORITES_LIBRARY_ID,
+  LibraryType,
+  type Library,
+} from "@/types/library";
 
 const LibraryIcon = {
   [LibraryType.book]: LibraryBig,
@@ -139,6 +143,11 @@ export function Sidebar() {
     openMiddle();
   };
 
+  const handleSelectFavorites = () => {
+    setSelectedLibraryId(FAVORITES_LIBRARY_ID);
+    openMiddle();
+  };
+
   return (
     <aside
       aria-label="库侧边栏"
@@ -148,6 +157,16 @@ export function Sidebar() {
       )}
     >
       <ScrollArea aria-label="库列表" viewportClassName="min-h-0 flex-1">
+        <Button
+          className={cn(
+            "h-8 w-full justify-start gap-2 rounded-none px-4 transition-all duration-300",
+            selectedLibraryId === FAVORITES_LIBRARY_ID && "bg-overlay text-love",
+          )}
+          onClick={handleSelectFavorites}
+        >
+          <Star className="h-4 w-4" />
+          <span>收藏</span>
+        </Button>
         <DndContext
           sensors={sensors}
           collisionDetection={closestCenter}

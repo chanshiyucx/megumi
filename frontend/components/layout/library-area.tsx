@@ -1,9 +1,10 @@
 import { cn } from '@/lib/style'
 import { useLibraryStore } from '@/store/library'
 import { useUIStore } from '@/store/ui'
-import { LibraryType } from '@/types/library'
+import { FAVORITES_LIBRARY_ID, LibraryType } from '@/types/library'
 import { BookLibrary } from './book-library'
 import { ComicLibrary } from './comic-library'
+import { FavoritesView } from './favorites-view'
 import { VideoLibrary } from './video-library'
 
 export function LibraryArea() {
@@ -13,7 +14,8 @@ export function LibraryArea() {
     selectedLibraryId ? s.libraries[selectedLibraryId] : null,
   )
 
-  if (!selectedLibrary) return null
+  const isFavorites = selectedLibraryId === FAVORITES_LIBRARY_ID
+  if (!selectedLibrary && !isFavorites) return null
 
   return (
     <main
@@ -21,9 +23,11 @@ export function LibraryArea() {
         'bg-surface overflow-hidden md:block md:flex-1',
         isSidebarCollapsed ? 'block flex-1' : 'hidden',
       )}
-      key={selectedLibrary.id}
+      key={selectedLibraryId}
     >
-      {selectedLibrary.type === LibraryType.book ? (
+      {!selectedLibrary ? (
+        <FavoritesView />
+      ) : selectedLibrary.type === LibraryType.book ? (
         <BookLibrary selectedLibrary={selectedLibrary} />
       ) : selectedLibrary.type === LibraryType.comic ? (
         <ComicLibrary selectedLibrary={selectedLibrary} />

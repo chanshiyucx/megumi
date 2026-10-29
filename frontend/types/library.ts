@@ -27,6 +27,31 @@ export interface LibraryNavStatus {
   videoId?: string
 }
 
+export const FAVORITES_LIBRARY_ID = '__favorites__'
+
+export type FavoriteCategory = 'comic' | 'image' | 'book' | 'chapter' | 'video'
+
+/** What the favorites view has selected in each category (device-local). */
+export interface FavoritesNavStatus {
+  category: FavoriteCategory
+  comicId?: string
+  imageKey?: string
+  bookId?: string
+  chapterKey?: string
+  videoId?: string
+}
+
+/**
+ * A one-shot request to move a reader to a position (a comic page index or a
+ * book line index). `seq` changes on every request so asking for the same spot
+ * twice still jumps.
+ */
+export interface JumpRequest {
+  id: string
+  index: number
+  seq: number
+}
+
 export interface Comic {
   id: string
   title: string

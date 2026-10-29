@@ -32,6 +32,29 @@ interface RemoteTabs {
   updatedAt?: string
 }
 
+interface ParagraphFavorite {
+  id: string
+  bookTitle: string
+  text: string
+  prev?: string
+  next?: string
+  chapterTitle?: string
+  lineIndex: number
+  lineCount: number
+  createdAt: string
+}
+
+interface RemoteParagraphs {
+  version: 1
+  paragraphs: Record<string, ParagraphFavorite>
+  updatedAt?: string
+}
+
+type PatchParagraphsRequest =
+  | { operation: 'add'; paragraph: ParagraphFavorite }
+  | { operation: 'update'; paragraph: ParagraphFavorite }
+  | { operation: 'remove'; id: string }
+
 type PatchTabsRequest =
   | { operation: 'open'; tabId: string }
   | { operation: 'close'; tabId: string }
@@ -40,11 +63,18 @@ type PatchTabsRequest =
 
 const TAGS_KEY = '.megumi/tags.json'
 const TABS_KEY = '.megumi/tabs.json'
+const PARAGRAPHS_KEY = '.megumi/paragraphs.json'
 const EMPTY_TAGS_ETAG = '"empty"'
 const EMPTY_TABS_ETAG = '"empty-tabs"'
+const EMPTY_PARAGRAPHS_ETAG = '"empty-paragraphs"'
 const MAX_TABS = 200
 const MAX_TAB_ID_LENGTH = 1024
 const MAX_TABS_WRITE_ATTEMPTS = 5
+const MAX_PARAGRAPHS = 5000
+const MAX_PARAGRAPH_ID_LENGTH = 128
+const MAX_PARAGRAPH_TEXT_LENGTH = 10_000
+const MAX_PARAGRAPH_FIELD_LENGTH = 1024
+const MAX_PARAGRAPHS_WRITE_ATTEMPTS = 5
 const REVALIDATE_HEADERS = {
   'Cache-Control': 'private, no-cache',
 }
@@ -520,6 +550,236 @@ async function handleTabs(request: Request, env: Env) {
   }
 }
 
+function emptyParagraphs(): RemoteParagraphs {
+  return { version: 1, paragraphs: {} }
+}
+
+function boundedString(value: unknown, maxLength: number): string | null {
+  if (typeof value !== 'string' || !value || value.length > maxLength) {
+    return null
+  }
+  return value
+}
+
+function optionalBoundedString(value: unknown, maxLength: number) {
+  if (value === undefined) return undefined
+  return boundedString(value, maxLength) ?? null
+}
+
+function normalizeParagraph(value: unknown): ParagraphFavorite | null {
+  if (!value || typeof value !== 'object') return null
+  const source = value as Record<string, unknown>
+
+  const id = boundedString(source.id, MAX_PARAGRAPH_ID_LENGTH)
+  const bookTitle = boundedString(source.bookTitle, MAX_PARAGRAPH_FIELD_LENGTH)
+  const text = boundedString(source.text, MAX_PARAGRAPH_TEXT_LENGTH)
+  const createdAt = boundedString(source.createdAt, 64)
+  const prev = optionalBoundedString(source.prev, MAX_PARAGRAPH_FIELD_LENGTH)
+  const next = optionalBoundedString(source.next, MAX_PARAGRAPH_FIELD_LENGTH)
+  const chapterTitle = optionalBoundedString(
+    source.chapterTitle,
+    MAX_PARAGRAPH_FIELD_LENGTH,
+  )
+  const { lineIndex, lineCount } = source
+  if (!id || !bookTitle || !text || !createdAt) return null
+  if (prev === null || next === null || chapterTitle === null) return null
+  if (
+    typeof lineIndex !== 'number' ||
+    typeof lineCount !== 'number' ||
+    !Number.isInteger(lineIndex) ||
+    !Number.isInteger(lineCount) ||
+    lineIndex < 0 ||
+    lineCount < 0
+  ) {
+    return null
+  }
+
+  return {
+    id,
+    bookTitle,
+    text,
+    ...(prev === undefined ? {} : { prev }),
+    ...(next === undefined ? {} : { next }),
+    ...(chapterTitle === undefined ? {} : { chapterTitle }),
+    lineIndex,
+    lineCount,
+    createdAt,
+  }
+}
+
+function normalizeParagraphs(value: unknown): RemoteParagraphs {
+  if (!value || typeof value !== 'object') return emptyParagraphs()
+  const source = value as Partial<RemoteParagraphs>
+  const paragraphs: Record<string, ParagraphFavorite> = {}
+  if (source.paragraphs && typeof source.paragraphs === 'object') {
+    for (const entry of Object.values(source.paragraphs)) {
+      const paragraph = normalizeParagraph(entry)
+      if (paragraph) paragraphs[paragraph.id] = paragraph
+    }
+  }
+  return {
+    version: 1,
+    paragraphs,
+    updatedAt:
+      typeof source.updatedAt === 'string' ? source.updatedAt : undefined,
+  }
+}
+
+async function parseParagraphsObject(
+  object: R2ObjectBody | null,
+): Promise<RemoteParagraphs> {
+  if (!object) return emptyParagraphs()
+  try {
+    return normalizeParagraphs(JSON.parse(await object.text()))
+  } catch {
+    return emptyParagraphs()
+  }
+}
+
+function parseParagraphPatchRequest(
+  value: unknown,
+): PatchParagraphsRequest | null {
+  if (!value || typeof value !== 'object') return null
+  const source = value as Record<string, unknown>
+
+  if (source.operation === 'remove') {
+    const id = boundedString(source.id, MAX_PARAGRAPH_ID_LENGTH)
+    return id ? { operation: 'remove', id } : null
+  }
+
+  if (source.operation === 'add' || source.operation === 'update') {
+    const paragraph = normalizeParagraph(source.paragraph)
+    return paragraph ? { operation: source.operation, paragraph } : null
+  }
+
+  return null
+}
+
+function parseParagraphPatchRequests(
+  value: unknown,
+): PatchParagraphsRequest[] | null {
+  const values = Array.isArray(value) ? value : [value]
+  if (!values.length || values.length > MAX_PARAGRAPHS) return null
+  const patches = values.map(parseParagraphPatchRequest)
+  return patches.every(
+    (patch): patch is PatchParagraphsRequest => patch !== null,
+  )
+    ? patches
+    : null
+}
+
+// add is idempotent (an existing id is kept), update only rewrites an existing
+// entry's anchor and keeps its createdAt, remove of a missing id is a no-op.
+function applyParagraphPatch(
+  state: RemoteParagraphs,
+  patch: PatchParagraphsRequest,
+) {
+  const { paragraphs } = state
+  if (patch.operation === 'remove') {
+    if (!paragraphs[patch.id]) return false
+    delete paragraphs[patch.id]
+    return true
+  }
+
+  const current = paragraphs[patch.paragraph.id]
+  if (patch.operation === 'add') {
+    if (current || Object.keys(paragraphs).length >= MAX_PARAGRAPHS) {
+      return false
+    }
+    paragraphs[patch.paragraph.id] = patch.paragraph
+    return true
+  }
+
+  if (!current) return false
+  paragraphs[current.id] = { ...patch.paragraph, createdAt: current.createdAt }
+  return true
+}
+
+async function mutateParagraphs(
+  env: Env,
+  patches: PatchParagraphsRequest[],
+): Promise<{ state: RemoteParagraphs; etag: string }> {
+  for (let attempt = 0; attempt < MAX_PARAGRAPHS_WRITE_ATTEMPTS; attempt += 1) {
+    const object = await env.MEGUMI_BUCKET.get(PARAGRAPHS_KEY)
+    const state = await parseParagraphsObject(object)
+    let changed = false
+    for (const patch of patches) {
+      changed = applyParagraphPatch(state, patch) || changed
+    }
+
+    if (!changed) {
+      return { state, etag: object?.httpEtag ?? EMPTY_PARAGRAPHS_ETAG }
+    }
+
+    state.updatedAt = new Date().toISOString()
+    const written = await env.MEGUMI_BUCKET.put(
+      PARAGRAPHS_KEY,
+      JSON.stringify(state),
+      {
+        onlyIf: object
+          ? { etagMatches: object.etag }
+          : { etagDoesNotMatch: '*' },
+        httpMetadata: { contentType: 'application/json; charset=utf-8' },
+      },
+    )
+    if (written) return { state, etag: written.httpEtag }
+  }
+
+  throw new Error('Failed to update paragraphs after concurrent writes')
+}
+
+async function handleParagraphs(request: Request, env: Env) {
+  if (request.method === 'GET') {
+    const object = await env.MEGUMI_BUCKET.get(PARAGRAPHS_KEY)
+    const etag = object?.httpEtag ?? EMPTY_PARAGRAPHS_ETAG
+    const headers = { ...REVALIDATE_HEADERS, ETag: etag }
+    if (etagMatches(request.headers.get('If-None-Match'), etag)) {
+      const responseHeaders = corsHeaders(request, env)
+      for (const [key, value] of new Headers(headers)) {
+        responseHeaders.set(key, value)
+      }
+      return new Response(null, { status: 304, headers: responseHeaders })
+    }
+    const state = await parseParagraphsObject(object)
+    return jsonResponse(request, env, state, { headers })
+  }
+
+  if (request.method !== 'PATCH') {
+    return jsonResponse(
+      request,
+      env,
+      { error: 'Method not allowed' },
+      { status: 405, headers: { Allow: 'GET,PATCH,OPTIONS' } },
+    )
+  }
+
+  let patches: PatchParagraphsRequest[] | null = null
+  try {
+    patches = parseParagraphPatchRequests(await request.json())
+  } catch {
+    patches = null
+  }
+
+  if (!patches) {
+    return jsonResponse(request, env, { error: 'Invalid request' }, { status: 400 })
+  }
+
+  try {
+    const result = await mutateParagraphs(env, patches)
+    return jsonResponse(request, env, result.state, {
+      headers: { 'Cache-Control': 'no-store', ETag: result.etag },
+    })
+  } catch (error) {
+    console.error('Failed to update paragraphs:', error)
+    return jsonResponse(
+      request,
+      env,
+      { error: 'Concurrent update conflict' },
+      { status: 409 },
+    )
+  }
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url)
@@ -534,6 +794,10 @@ export default {
 
     if (url.pathname === '/tabs') {
       return handleTabs(request, env)
+    }
+
+    if (url.pathname === '/paragraphs') {
+      return handleParagraphs(request, env)
     }
 
     return jsonResponse(request, env, { error: 'Not found' }, { status: 404 })

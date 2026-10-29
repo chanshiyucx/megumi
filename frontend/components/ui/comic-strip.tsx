@@ -9,6 +9,8 @@ import type { FileTags, Image } from '@/types/library'
 
 export interface ComicStripHandle {
   jumpTo: (index?: number) => void
+  // Smoothly moves one page forward (1) or back (-1); see getStepOffset.
+  step: (direction: 1 | -1) => void
 }
 
 interface ComicStripProps {
@@ -87,7 +89,7 @@ export const ComicStrip = forwardRef<ComicStripHandle, ComicStripProps>(
     },
     ref,
   ) {
-    const { containerRef, jumpTo, layout, onScroll, visibleRange } =
+    const { containerRef, jumpTo, step, layout, onScroll, visibleRange } =
       useComicStrip({
         images,
         initialIndex,
@@ -95,7 +97,7 @@ export const ComicStrip = forwardRef<ComicStripHandle, ComicStripProps>(
         onCurrentIndexChange,
       })
 
-    useImperativeHandle(ref, () => ({ jumpTo }), [jumpTo])
+    useImperativeHandle(ref, () => ({ jumpTo, step }), [jumpTo, step])
 
     return (
       <div

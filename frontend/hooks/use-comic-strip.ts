@@ -3,6 +3,11 @@ import type { Image } from '@/types/library'
 
 const DEFAULT_OVERSCAN_VIEWPORTS = 2
 const DEFAULT_MAX_RENDERED_PAGES = 16
+// A page edge this close to the viewport edge counts as aligned with it.
+const EDGE_SLOP = 2
+// Upper bound for a smooth step scroll; after it the next step reads the real
+// scroll offset again even if the animation was interrupted.
+const STEP_SETTLE_MS = 800
 export type ComicStripOrientation = 'horizontal' | 'vertical'
 
 interface ComicPageLayout {
@@ -213,6 +218,57 @@ function shouldUpdateVisibleRange(
   )
 }
 
+/**
+ * Where a one-page step from `offset` lands.
+ *
+ * Horizontal: forward brings the first page cut off by the far viewport edge
+ * fully into view (its end on that edge), backward does the same for the near
+ * edge; a page wider than the viewport is walked through a viewport at a time.
+ *
+ * Vertical: pages are usually taller than the viewport, so a step moves to the
+ * next / previous page and puts its top at the top of the viewport.
+ */
+function getStepOffset(
+  layout: ComicStripLayout,
+  offset: number,
+  direction: 1 | -1,
+) {
+  const { pages, viewportSize, totalSize } = layout
+  const viewportEnd = offset + viewportSize
+  const maxOffset = Math.max(0, totalSize - viewportSize)
+  let target: number
+
+  if (layout.orientation === 'vertical') {
+    const page =
+      direction > 0
+        ? pages.find((p) => p.start > offset + EDGE_SLOP)
+        : pages.findLast((p) => p.start < offset - EDGE_SLOP)
+    return page ? clamp(page.start, 0, maxOffset) : null
+  }
+
+  if (direction > 0) {
+    const page = pages.find((p) => p.end > viewportEnd + EDGE_SLOP)
+    if (!page) return null
+    target =
+      page.size <= viewportSize
+        ? page.end - viewportSize
+        : page.start > offset + EDGE_SLOP
+          ? page.start
+          : Math.min(viewportEnd, page.end - viewportSize)
+  } else {
+    const page = pages.findLast((p) => p.start < offset - EDGE_SLOP)
+    if (!page) return null
+    target =
+      page.size <= viewportSize
+        ? page.start
+        : page.end < viewportEnd - EDGE_SLOP
+          ? page.end - viewportSize
+          : Math.max(offset - viewportSize, page.start)
+  }
+
+  return clamp(target, 0, maxOffset)
+}
+
 function getScrollOffset(
   container: HTMLDivElement,
   orientation: ComicStripOrientation,
@@ -234,6 +290,10 @@ export function useComicStrip({
   const pendingJumpRef = useRef<number | null>(initialIndex)
   const frameRef = useRef<number | null>(null)
   const pendingScrollOffsetRef = useRef(0)
+  // Destination of an in-flight smooth step, so quick repeated steps chain
+  // from where the last one is heading rather than from mid-animation.
+  const stepTargetRef = useRef<number | null>(null)
+  const stepTimerRef = useRef<number | null>(null)
   const currentIndexRef = useRef(initialIndex)
   const visibleRangeRef = useRef<VisibleRange>({ start: 0, end: 0 })
   const layoutRef = useRef<ComicStripLayout | null>(null)
@@ -303,6 +363,12 @@ export function useComicStrip({
     if (!container) return
     const scrollOffset = getScrollOffset(container, orientation)
     pendingScrollOffsetRef.current = scrollOffset
+    if (
+      stepTargetRef.current !== null &&
+      Math.abs(scrollOffset - stepTargetRef.current) < 1
+    ) {
+      stepTargetRef.current = null
+    }
     if (frameRef.current !== null) return
     frameRef.current = requestAnimationFrame(flushScrollState)
   }
@@ -346,6 +412,28 @@ export function useComicStrip({
     )
     visibleRangeRef.current = nextRange
     setVisibleRange(nextRange)
+  }
+
+  const step = (direction: 1 | -1) => {
+    const container = containerRef.current
+    if (!container || !layout) return
+
+    const offset =
+      stepTargetRef.current ?? getScrollOffset(container, orientation)
+    const target = getStepOffset(layout, offset, direction)
+    if (target === null) return
+
+    stepTargetRef.current = target
+    if (stepTimerRef.current !== null) clearTimeout(stepTimerRef.current)
+    stepTimerRef.current = window.setTimeout(() => {
+      stepTargetRef.current = null
+      stepTimerRef.current = null
+    }, STEP_SETTLE_MS)
+
+    container.scrollTo({
+      [orientation === 'horizontal' ? 'left' : 'top']: target,
+      behavior: 'smooth',
+    })
   }
 
   useLayoutEffect(() => {
@@ -431,6 +519,7 @@ export function useComicStrip({
   useEffect(
     () => () => {
       if (frameRef.current !== null) cancelAnimationFrame(frameRef.current)
+      if (stepTimerRef.current !== null) clearTimeout(stepTimerRef.current)
     },
     [],
   )
@@ -438,6 +527,7 @@ export function useComicStrip({
   return {
     containerRef,
     jumpTo,
+    step,
     layout,
     onScroll,
     visibleRange,

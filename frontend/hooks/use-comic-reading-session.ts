@@ -235,6 +235,16 @@ export function useComicReadingSession({
     setPreviewIndex(-1)
   }
 
+  // ←/→ move the strip one page. The browser's own small arrow scroll is
+  // stopped; while the preview is open it pages the preview (its own listener)
+  // instead. Holding the key steps once: auto-repeat would chain steps onto a
+  // moving target and jitter, then land many pages on.
+  const stepStrip = (e: KeyboardEvent) => {
+    e.preventDefault()
+    if (previewIndex >= 0 || e.repeat) return
+    stripRef.current?.step(e.code === SHORTCUTS.nextImage ? 1 : -1)
+  }
+
   const handleKeyDown = useEffectEvent((e: KeyboardEvent) => {
     if (e.metaKey || e.ctrlKey || e.altKey) return
     if (!comic) return
@@ -257,6 +267,10 @@ export function useComicReadingSession({
           break
         case SHORTCUTS.toggleImageStarred:
           toggleTargetImageStarred()
+          break
+        case SHORTCUTS.prevImage:
+        case SHORTCUTS.nextImage:
+          stepStrip(e)
           break
       }
       return
@@ -282,6 +296,10 @@ export function useComicReadingSession({
         break
       case SHORTCUTS.toggleImageStarred:
         toggleTargetImageStarred()
+        break
+      case SHORTCUTS.prevImage:
+      case SHORTCUTS.nextImage:
+        if (stripVisible) stepStrip(e)
         break
     }
   })

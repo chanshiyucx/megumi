@@ -85,13 +85,12 @@ function ProgressiveImage({
         src={image.url}
         alt={image.filename}
         decoding="async"
-        draggable={false}
         loading={loading}
         onLoad={() => {
           setLoadedUrl(image.url)
         }}
         className={cn(
-          'absolute inset-0 block h-full w-full object-contain transition-opacity duration-100',
+          'absolute inset-0 block h-full w-full object-contain transition-opacity duration-100 [-webkit-touch-callout:default]',
           isFullLoaded ? 'opacity-100' : 'opacity-0',
           image.deleted && 'grayscale',
         )}
@@ -128,7 +127,7 @@ function SingleImage({
           alt={image.filename}
           decoding="async"
           className={cn(
-            'block h-full w-full object-contain',
+            'block h-full w-full object-contain [-webkit-touch-callout:default]',
             image.deleted && 'grayscale',
           )}
         />

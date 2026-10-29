@@ -69,6 +69,7 @@ const FAVORITE_CATEGORIES: FavoriteCategory[] = [
   'image',
   'book',
   'chapter',
+  'paragraph',
   'video',
 ]
 

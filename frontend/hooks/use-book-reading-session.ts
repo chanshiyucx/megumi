@@ -6,6 +6,7 @@ import {
   useState,
 } from 'react'
 import type { VirtuosoHandle } from 'react-virtuoso'
+import { useParagraphFavorites } from '@/hooks/use-paragraph-favorites'
 import { useScrollLock } from '@/hooks/use-scroll-lock'
 import { useThrottledProgress } from '@/hooks/use-throttled-progress'
 import { createBookProgress } from '@/lib/progress'
@@ -91,12 +92,22 @@ export function useBookReadingSession({
   }
   const jumpToFn = useEffectEvent(jumpTo)
 
+  const paragraphFavorites = useParagraphFavorites(book, content)
+  const resolveJump = useEffectEvent((request: JumpRequest) => {
+    if (!request.paragraphId) return request.index
+    return paragraphFavorites.lineOf(request.paragraphId)
+  })
+
   useEffect(() => {
     if (!jumpRequest || jumpRequest.id !== bookId) return
     if (handledJumpRef.current === jumpRequest.seq || !content) return
+    // A paragraph jump waits until favorites are loaded and matched; one whose
+    // paragraph is gone from the text is dropped.
+    if (jumpRequest.paragraphId && !paragraphFavorites.ready) return
     handledJumpRef.current = jumpRequest.seq
-    jumpToFn(jumpRequest.index)
-  }, [bookId, content, jumpRequest])
+    const index = resolveJump(jumpRequest)
+    if (index !== undefined) jumpToFn(index)
+  }, [bookId, content, jumpRequest, paragraphFavorites.ready])
 
   useEffect(() => {
     if (!book?.path) return
@@ -237,5 +248,7 @@ export function useBookReadingSession({
     toggleBookDeleted,
     toggleBookStarred,
     toggleChapterStarred,
+    starredLines: paragraphFavorites.starredLines,
+    toggleLines: paragraphFavorites.toggleLines,
   }
 }

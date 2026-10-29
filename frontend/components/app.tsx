@@ -6,6 +6,7 @@ import { AppLayout } from '@/components/layout/app-layout'
 import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/ui/spinner'
 import { useLibraryStore } from '@/store/library'
+import { useParagraphsStore } from '@/store/paragraphs'
 import { initializeThemeSync } from '@/store/ui'
 
 const AUTO_REFRESH_MIN_INTERVAL_MS = 60_000
@@ -14,7 +15,10 @@ export function App() {
   const loadStatus = useLibraryStore((state) => state.loadStatus)
   const loadError = useLibraryStore((state) => state.loadError)
   const hydrate = useLibraryStore((state) => state.hydrate)
-  const refreshHydrate = useEffectEvent(() => hydrate())
+  const refreshParagraphs = useParagraphsStore((state) => state.refresh)
+  const refreshHydrate = useEffectEvent(() =>
+    Promise.all([hydrate(), refreshParagraphs()]).then(() => undefined),
+  )
 
   useEffect(() => {
     const cleanupThemeSync = initializeThemeSync()

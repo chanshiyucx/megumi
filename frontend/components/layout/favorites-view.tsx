@@ -15,11 +15,15 @@ import {
   favoriteChapterGroups,
   favoriteComics,
   favoriteImageGroups,
+  favoriteParagraphGroups,
   favoriteVideos,
+  type FavoriteParagraphBlock,
   type FavoriteSources,
 } from '@/lib/favorites'
+import type { ParagraphFavorite } from '@/lib/remote-paragraphs'
 import { cn, LIST_COLUMN_CLASS } from '@/lib/style'
 import { useLibraryStore } from '@/store/library'
+import { useParagraphsStore } from '@/store/paragraphs'
 import { useProgressStore } from '@/store/progress'
 import { useUIStore } from '@/store/ui'
 import type {
@@ -41,6 +45,7 @@ const CATEGORIES: { key: FavoriteCategory; label: string }[] = [
   { key: 'image', label: '图片' },
   { key: 'book', label: '图书' },
   { key: 'chapter', label: '章节' },
+  { key: 'paragraph', label: '段落' },
   { key: 'video', label: '视频' },
 ]
 
@@ -125,13 +130,18 @@ function starredKeys(category: FavoriteCategory, favorites: Favorites) {
       )
     case 'video':
       return favorites.video.filter((v) => v.starred).map((v) => v.id)
+    // Unfavorited paragraphs are deleted, so they are kept separately.
+    case 'paragraph':
+      return []
   }
 }
 
 function countFavorites(
   favorites: Favorites,
+  paragraphCount: number,
 ): Record<FavoriteCategory, number> {
   return {
+    paragraph: paragraphCount,
     comic: favorites.comic.length,
     image: favorites.image.reduce((sum, g) => sum + g.images.length, 0),
     book: favorites.book.length,
@@ -248,6 +258,12 @@ export function FavoritesView() {
   const updateBookTags = useLibraryStore((s) => s.updateBookTags)
   const updateBookChapterTags = useLibraryStore((s) => s.updateBookChapterTags)
   const updateVideoTags = useLibraryStore((s) => s.updateVideoTags)
+  const paragraphs = useParagraphsStore((s) => s.paragraphs)
+  const paragraphsStatus = useParagraphsStore((s) => s.status)
+  const missingParagraphs = useParagraphsStore((s) => s.missing)
+  const ensureParagraphsLoaded = useParagraphsStore((s) => s.ensureLoaded)
+  const addParagraphs = useParagraphsStore((s) => s.addParagraphs)
+  const removeParagraphs = useParagraphsStore((s) => s.removeParagraphs)
 
   const [retained, setRetained] = useState({
     category,
@@ -255,6 +271,11 @@ export function FavoritesView() {
   })
   const [jumpRequest, setJumpRequest] = useState<JumpRequest>()
   const [playRequest, setPlayRequest] = useState(0)
+  // Paragraphs unfavorited here are deleted from the store; keep them listed
+  // (greyed, restorable) until the category changes.
+  const [removedParagraphs, setRemovedParagraphs] = useState<
+    Record<string, ParagraphFavorite>
+  >({})
   const jumpSeqRef = useRef(0)
 
   const retainedKeys =
@@ -263,9 +284,20 @@ export function FavoritesView() {
     () => collectFavorites(src, retainedKeys),
     [src, retainedKeys],
   )
+  const paragraphGroups = useMemo(
+    () => favoriteParagraphGroups(src, paragraphs, removedParagraphs),
+    [paragraphs, removedParagraphs, src],
+  )
   const counts = useMemo(
-    () => countFavorites(collectFavorites(src, NO_RETAINED)),
-    [src],
+    () =>
+      countFavorites(
+        collectFavorites(src, NO_RETAINED),
+        favoriteParagraphGroups(src, paragraphs, {}).reduce(
+          (sum, group) => sum + group.blocks.length,
+          0,
+        ),
+      ),
+    [paragraphs, src],
   )
 
   // Remember every starred item shown in this category so unstarring it keeps
@@ -289,6 +321,12 @@ export function FavoritesView() {
       void getBookChapters(bookId)
   }, [getBookChapters, src.favoriteChapterBookIds])
 
+  useEffect(() => {
+    void ensureParagraphsLoaded()
+  }, [ensureParagraphsLoaded])
+  const paragraphsLoading =
+    paragraphsStatus === 'idle' || paragraphsStatus === 'loading'
+
   const imagesLoading = src.favoriteImageComicIds.some((id) => {
     const status = comicImages[id]?.status
     return status === 'idle' || status === 'loading'
@@ -298,14 +336,15 @@ export function FavoritesView() {
     return status === undefined || status === 'idle' || status === 'loading'
   })
 
-  const nextJump = (id: string, index: number) => {
+  const nextJump = (id: string, index: number, paragraphId?: string) => {
     jumpSeqRef.current += 1
-    setJumpRequest({ id, index, seq: jumpSeqRef.current })
+    setJumpRequest({ id, index, seq: jumpSeqRef.current, paragraphId })
   }
 
   const selectCategory = (next: FavoriteCategory) => {
     if (next === category) return
     setJumpRequest(undefined)
+    setRemovedParagraphs({})
     setFavoritesNav({ category: next })
   }
 
@@ -333,6 +372,34 @@ export function FavoritesView() {
     })
     nextJump(book.id, chapter.lineIndex)
     openReader()
+  }
+
+  // A block is selected and jumped to through its first paragraph.
+  const selectParagraphBlock = (block: FavoriteParagraphBlock, book?: Book) => {
+    const [first] = block.paragraphs
+    setFavoritesNav({ paragraphId: first.id })
+    if (!book) return
+    nextJump(book.id, first.lineIndex, first.id)
+    openReader()
+  }
+
+  // Unfavorites (or restores) every paragraph of the block together.
+  const toggleParagraphBlock = (block: FavoriteParagraphBlock) => {
+    const ids = block.paragraphs.map(({ id }) => id)
+    if (block.starred) {
+      setRemovedParagraphs((removed) => ({
+        ...removed,
+        ...Object.fromEntries(block.paragraphs.map((p) => [p.id, p])),
+      }))
+      void removeParagraphs(ids)
+      return
+    }
+    setRemovedParagraphs((removed) => {
+      const rest = { ...removed }
+      for (const id of ids) delete rest[id]
+      return rest
+    })
+    void addParagraphs(block.paragraphs)
   }
 
   const selectVideo = (videoId: string) => {
@@ -476,6 +543,84 @@ export function FavoritesView() {
           <EmptyState loading={chaptersLoading} />
         )
 
+      case 'paragraph':
+        return paragraphGroups.length ? (
+          <ScrollArea aria-label="收藏段落" viewportClassName="h-0 flex-1">
+            {paragraphGroups.map(({ bookTitle, book, blocks }) => (
+              <section key={bookTitle}>
+                <GroupHeader
+                  title={book ? bookTitle : `${bookTitle}（图书不存在）`}
+                  count={blocks.length}
+                />
+                {blocks.map((block) => {
+                  const [first] = block.paragraphs
+                  const isSelected = block.paragraphs.some(
+                    ({ id }) => id === nav.paragraphId,
+                  )
+                  const missingCount = book
+                    ? block.paragraphs.filter(({ id }) => missingParagraphs[id])
+                        .length
+                    : 0
+                  const text = block.paragraphs.map((p) => p.text).join('\n')
+                  return (
+                    <div
+                      key={first.id}
+                      className={cn(
+                        'hover:bg-overlay flex w-full cursor-pointer items-start gap-2 px-3 py-2 text-sm',
+                        isSelected && 'bg-overlay',
+                        !block.starred && 'opacity-40',
+                      )}
+                      onClick={() => {
+                        selectParagraphBlock(block, book)
+                      }}
+                    >
+                      <div className="min-w-0 flex-1">
+                        <p
+                          className={cn(
+                            'line-clamp-3 font-serif leading-relaxed whitespace-pre-line',
+                            isSelected && 'text-love',
+                          )}
+                          title={text}
+                        >
+                          {text}
+                        </p>
+                        <div className="text-subtle/60 mt-1 flex gap-2 text-xs">
+                          {first.chapterTitle && (
+                            <span className="truncate">
+                              {first.chapterTitle}
+                            </span>
+                          )}
+                          {block.paragraphs.length > 1 && (
+                            <span className="shrink-0">
+                              {block.paragraphs.length} 段
+                            </span>
+                          )}
+                          {missingCount > 0 && (
+                            <span className="text-love shrink-0">
+                              {block.paragraphs.length > 1
+                                ? `${missingCount} 段原文已变更`
+                                : '原文已变更'}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                      <StarToggle
+                        starred={block.starred}
+                        title="收藏段落"
+                        onToggle={() => {
+                          toggleParagraphBlock(block)
+                        }}
+                      />
+                    </div>
+                  )
+                })}
+              </section>
+            ))}
+          </ScrollArea>
+        ) : (
+          <EmptyState loading={paragraphsLoading} />
+        )
+
       case 'video':
         return favorites.video.length ? (
           <VirtuosoGrid
@@ -523,13 +668,20 @@ export function FavoritesView() {
       }
 
       case 'book':
-      case 'chapter': {
+      case 'chapter':
+      case 'paragraph': {
         const bookId =
           category === 'book'
             ? (nav.bookId ?? '')
-            : nav.chapterKey
-              ? bookIdForChapterKey(nav.chapterKey)
-              : ''
+            : category === 'chapter'
+              ? nav.chapterKey
+                ? bookIdForChapterKey(nav.chapterKey)
+                : ''
+              : (paragraphGroups.find((group) =>
+                  group.blocks.some((block) =>
+                    block.paragraphs.some(({ id }) => id === nav.paragraphId),
+                  ),
+                )?.book?.id ?? '')
         return (
           <div className={cn('min-h-0 min-w-0 flex-1', readerClass)}>
             {bookId && (

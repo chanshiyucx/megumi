@@ -27,6 +27,7 @@ import {
   videoTagTarget,
 } from '@/lib/tag-actions'
 import type { RemoteTags } from '@/lib/tags'
+import { useParagraphsStore } from '@/store/paragraphs'
 import { useUIStore } from '@/store/ui'
 import {
   hydrateTabsFromRemote,
@@ -326,6 +327,16 @@ function resolveCurrentResource(state: LibraryState): CurrentResource | null {
     if (category === 'book' && bookId) return { type: 'book', id: bookId }
     if (category === 'chapter' && chapterKey) {
       return { type: 'book', id: bookIdForChapterKey(chapterKey) }
+    }
+    if (category === 'paragraph' && ui.favoritesNav.paragraphId) {
+      const paragraph =
+        useParagraphsStore.getState().paragraphs[ui.favoritesNav.paragraphId]
+      const book = paragraph
+        ? Object.values(state.books).find(
+            (item) => item.title === paragraph.bookTitle,
+          )
+        : undefined
+      return book ? { type: 'book', id: book.id } : null
     }
     if (category === 'video' && videoId) return { type: 'video', id: videoId }
     return null

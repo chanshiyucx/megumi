@@ -1,3 +1,4 @@
+import type { ParagraphFavorite } from '@/lib/remote-paragraphs'
 import type { RemoteTags } from '@/lib/tags'
 import type {
   Author,
@@ -34,6 +35,21 @@ export interface FavoriteImageGroup {
 export interface FavoriteChapterGroup {
   book: Book
   chapters: Chapter[]
+}
+
+// A run of favorited paragraphs shown as one entry.
+export interface FavoriteParagraphBlock {
+  // In reading order; the block's identity is its first paragraph's id.
+  paragraphs: ParagraphFavorite[]
+  // False for a block unfavorited in this session (listed for restoring).
+  starred: boolean
+}
+
+export interface FavoriteParagraphGroup {
+  bookTitle: string
+  // Undefined when no book with that title exists any more.
+  book?: Book
+  blocks: FavoriteParagraphBlock[]
 }
 
 // Items unstarred while the favorites view is open stay listed (greyed) until
@@ -175,4 +191,91 @@ export function favoriteChapterGroups(
       ),
     }))
     .filter((group) => group.chapters.length)
+}
+
+function byPosition(a: ParagraphFavorite, b: ParagraphFavorite) {
+  return (
+    a.lineIndex - b.lineIndex || a.createdAt.localeCompare(b.createdAt)
+  )
+}
+
+/**
+ * Splits one book's paragraphs into blocks: a paragraph joins the previous
+ * block when it directly follows it, or was favorited in the same action
+ * (same createdAt), which keeps a selection that spanned an illustration
+ * together.
+ */
+function toBlocks(paragraphs: ParagraphFavorite[], starred: boolean) {
+  const blocks: FavoriteParagraphBlock[] = []
+  for (const paragraph of [...paragraphs].sort(byPosition)) {
+    const block = blocks.at(-1)
+    const last = block?.paragraphs.at(-1)
+    if (
+      block &&
+      last &&
+      (paragraph.lineIndex - last.lineIndex <= 1 ||
+        paragraph.createdAt === last.createdAt)
+    ) {
+      block.paragraphs.push(paragraph)
+    } else {
+      blocks.push({ paragraphs: [paragraph], starred })
+    }
+  }
+  return blocks
+}
+
+/**
+ * Paragraph favorites grouped by book in library order (books that no longer
+ * exist go last), with each book's paragraphs merged into blocks. `removed`
+ * are entries unfavorited in this session, listed unstarred so they can be
+ * restored in place.
+ */
+export function favoriteParagraphGroups(
+  src: FavoriteSources,
+  paragraphs: Record<string, ParagraphFavorite>,
+  removed: Record<string, ParagraphFavorite>,
+): FavoriteParagraphGroup[] {
+  const byBook = new Map<
+    string,
+    { starred: ParagraphFavorite[]; removed: ParagraphFavorite[] }
+  >()
+  const bucket = (bookTitle: string) => {
+    let entry = byBook.get(bookTitle)
+    if (!entry) {
+      entry = { starred: [], removed: [] }
+      byBook.set(bookTitle, entry)
+    }
+    return entry
+  }
+  for (const paragraph of Object.values(paragraphs)) {
+    bucket(paragraph.bookTitle).starred.push(paragraph)
+  }
+  for (const paragraph of Object.values(removed)) {
+    if (!paragraphs[paragraph.id]) {
+      bucket(paragraph.bookTitle).removed.push(paragraph)
+    }
+  }
+
+  const books = new Map<string, { book: Book; order: number }>()
+  orderedBooks(src).forEach((book, order) => {
+    if (!books.has(book.title)) books.set(book.title, { book, order })
+  })
+
+  return [...byBook]
+    .map(([bookTitle, entry]) => ({
+      bookTitle,
+      book: books.get(bookTitle)?.book,
+      // Removed blocks stay apart from the live ones so restoring one brings
+      // back exactly what was removed.
+      blocks: [
+        ...toBlocks(entry.starred, true),
+        ...toBlocks(entry.removed, false),
+      ].sort((a, b) => byPosition(a.paragraphs[0], b.paragraphs[0])),
+    }))
+    .sort(
+      (a, b) =>
+        (books.get(a.bookTitle)?.order ?? Infinity) -
+          (books.get(b.bookTitle)?.order ?? Infinity) ||
+        a.bookTitle.localeCompare(b.bookTitle),
+    )
 }

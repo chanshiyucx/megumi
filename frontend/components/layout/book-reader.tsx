@@ -1,5 +1,11 @@
 import { SquareMenu, Star, StepForward, Trash2 } from 'lucide-react'
-import { type RefObject, useLayoutEffect, useRef, useState } from 'react'
+import {
+  type RefObject,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 import {
   type ListRange,
   Virtuoso,
@@ -10,13 +16,21 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { Spinner } from '@/components/ui/spinner'
 import { useBookReadingSession } from '@/hooks/use-book-reading-session'
 import { useClickOutside } from '@/hooks/use-click-outside'
+import { useParagraphSelection } from '@/hooks/use-paragraph-selection'
 import { cn } from '@/lib/style'
 import type { Chapter, JumpRequest } from '@/types/library'
 
+// Must match ReaderPadding's h-16; the favorites rail maps lines to pixels.
+const READER_PADDING_PX = 64
 const ReaderPadding = {
   Header: () => <div className="h-16" />,
   Footer: () => <div className="h-16" />,
 }
+// Rail offset from the right edge when scrollbars overlay the content (macOS)
+// and take no layout width. With the rail's w-4 it ends 24px in, clear of the
+// lines' pr-8 text edge.
+const OVERLAY_SCROLLBAR_RAIL_OFFSET_PX = 8
+const MARKER_LABEL_LENGTH = 40
 
 const TOP_OVERSCAN_PX = 800
 const BOTTOM_OVERSCAN_PX = 200
@@ -40,9 +54,11 @@ function getBookImageBaseUrl(bookUrl: string): string | null {
 interface BookLineProps {
   imageBaseUrl: string | null
   line: string
+  index?: number
+  starred?: boolean
 }
 
-function BookLine({ imageBaseUrl, line }: BookLineProps) {
+function BookLine({ imageBaseUrl, line, index, starred }: BookLineProps) {
   const imageFilename = parseBookImageFilename(line)
   const imageUrl =
     imageBaseUrl && imageFilename
@@ -52,7 +68,7 @@ function BookLine({ imageBaseUrl, line }: BookLineProps) {
 
   if (imageUrl && failedImageUrl !== imageUrl) {
     return (
-      <figure className="mx-auto w-full px-4 pb-4">
+      <figure className="mx-auto w-full pr-8 pb-4 pl-4">
         <img
           src={imageUrl}
           alt={imageFilename ?? '小说插图'}
@@ -66,9 +82,60 @@ function BookLine({ imageBaseUrl, line }: BookLineProps) {
   }
 
   return (
-    <p className="text-text mx-auto w-full px-4 pb-4 font-serif leading-relaxed wrap-break-word whitespace-pre-wrap">
+    <p
+      data-line-index={index}
+      className={cn(
+        // pr-8 keeps text clear of the favorites rail beside the scrollbar.
+        'text-text mx-auto w-full pr-8 pb-4 pl-4 font-serif leading-relaxed wrap-break-word whitespace-pre-wrap',
+        starred &&
+          'decoration-love/70 underline decoration-1 underline-offset-[0.3em]',
+      )}
+    >
       {line}
     </p>
+  )
+}
+
+interface ParagraphFavoriteButtonProps {
+  x: number
+  y: number
+  placeBelow: boolean
+  count: number
+  allStarred: boolean
+  onToggle: () => void
+}
+
+// Floats over the current selection; acting on it favorites (or, when every
+// selected paragraph already is, unfavorites) the whole paragraphs touched.
+function ParagraphFavoriteButton({
+  x,
+  y,
+  placeBelow,
+  count,
+  allStarred,
+  onToggle,
+}: ParagraphFavoriteButtonProps) {
+  const label = allStarred ? '取消收藏' : '收藏'
+  return (
+    <button
+      type="button"
+      className={cn(
+        'bg-base text-text absolute z-20 flex -translate-x-1/2 items-center gap-1.5 rounded-sm border px-3 py-1.5 text-xs shadow-md',
+        placeBelow ? 'mt-2' : '-mt-2 -translate-y-full',
+      )}
+      style={{ left: x, top: y }}
+      // Keep the selection alive on desktop; the click acts on the paragraphs
+      // captured from it anyway, in case a touch browser clears it first.
+      onPointerDown={(e) => {
+        e.preventDefault()
+      }}
+      onClick={onToggle}
+    >
+      <Star
+        className={cn('h-3.5 w-3.5', allStarred && 'text-love fill-gold/80')}
+      />
+      {count > 1 ? `${label} ${count} 段` : label}
+    </button>
   )
 }
 
@@ -127,12 +194,74 @@ function estimateLineHeights(
   })
 }
 
+interface FavoriteMarker {
+  key: string
+  kind: 'chapter' | 'paragraph'
+  lineIndex: number
+  // Position along the scroll height, 0-100.
+  top: number
+  label: string
+}
+
+interface FavoriteRailProps {
+  markers: FavoriteMarker[]
+  right: number
+  onJump: (lineIndex: number) => void
+}
+
+// Marks favorited chapters (dashes) and paragraph runs (dots) beside the
+// scrollbar at their share of the scroll height; a click jumps there.
+function FavoriteRail({ markers, right, onJump }: FavoriteRailProps) {
+  if (!markers.length) return null
+  return (
+    <div
+      aria-label="收藏位置"
+      className="pointer-events-none absolute inset-y-2 z-10 w-4"
+      style={{ right }}
+    >
+      {markers.map((marker) => (
+        <button
+          key={marker.key}
+          type="button"
+          title={marker.label}
+          aria-label={marker.label}
+          className="pointer-events-auto absolute left-1/2 flex h-4 w-4 -translate-x-1/2 -translate-y-1/2 items-center justify-center"
+          style={{ top: `${marker.top}%` }}
+          onClick={() => {
+            onJump(marker.lineIndex)
+          }}
+        >
+          <span
+            className={cn(
+              'rounded-full',
+              marker.kind === 'chapter'
+                ? 'bg-gold h-0.5 w-3'
+                : 'bg-love h-1.5 w-1.5',
+            )}
+          />
+        </button>
+      ))}
+    </div>
+  )
+}
+
+function excerpt(line: string) {
+  const text = line.trim()
+  return text.length > MARKER_LABEL_LENGTH
+    ? `${text.slice(0, MARKER_LABEL_LENGTH)}…`
+    : text
+}
+
 interface VirtualBookProps {
   imageBaseUrl: string | null
   initialTopMostItemIndex: number
   lines: readonly string[]
   rangeChanged: (range: ListRange) => void
   virtuosoRef: RefObject<VirtuosoHandle | null>
+  starredLines: ReadonlySet<number>
+  onToggleLines: (lineIndices: number[]) => void
+  favoriteChapters: Chapter[]
+  onJump: (lineIndex: number) => void
 }
 
 function VirtualBook({
@@ -141,14 +270,88 @@ function VirtualBook({
   lines,
   rangeChanged,
   virtuosoRef,
+  starredLines,
+  onToggleLines,
+  favoriteChapters,
+  onJump,
 }: VirtualBookProps) {
   const probeRef = useRef<HTMLDivElement>(null)
+  const contentRef = useRef<HTMLDivElement>(null)
+  const { selection, clear: clearSelection } = useParagraphSelection(
+    contentRef,
+    (lineIndex) =>
+      lineIndex < lines.length && !parseBookImageFilename(lines[lineIndex]),
+  )
   const [estimation, setEstimation] = useState<{
     heights: number[]
     lines: readonly string[]
     width: number
   } | null>(null)
   const hasCurrentEstimates = estimation?.lines === lines
+  const [railRight, setRailRight] = useState(OVERLAY_SCROLLBAR_RAIL_OFFSET_PX)
+
+  // Sit just left of a classic scrollbar; overlay scrollbars take no width.
+  useLayoutEffect(() => {
+    const scroller = contentRef.current?.querySelector<HTMLElement>(
+      '[data-virtuoso-scroller]',
+    )
+    if (!scroller) return
+    const scrollbarWidth = scroller.offsetWidth - scroller.clientWidth
+    setRailRight(
+      scrollbarWidth > 0 ? scrollbarWidth + 1 : OVERLAY_SCROLLBAR_RAIL_OFFSET_PX,
+    )
+  }, [estimation])
+
+  // Positions use the same per-line height estimates Virtuoso scrolls by, so
+  // markers line up with the scrollbar thumb rather than with line counts.
+  const layout = useMemo(() => {
+    if (!estimation) return null
+    const offsets: number[] = []
+    let total = READER_PADDING_PX
+    for (const height of estimation.heights) {
+      offsets.push(total)
+      total += height
+    }
+    return { lines: estimation.lines, offsets, total: total + READER_PADDING_PX }
+  }, [estimation])
+
+  const markers = useMemo(() => {
+    if (!layout || layout.lines !== lines) return []
+    const topOf = (lineIndex: number) =>
+      ((layout.offsets[lineIndex] ?? 0) / layout.total) * 100
+
+    const result: FavoriteMarker[] = favoriteChapters.map((chapter) => ({
+      key: `chapter-${chapter.lineIndex}`,
+      kind: 'chapter',
+      lineIndex: chapter.lineIndex,
+      top: topOf(chapter.lineIndex),
+      label: `章节：${chapter.title}`,
+    }))
+
+    // One dot per run of consecutive favorited paragraphs.
+    const sorted = [...starredLines].sort((a, b) => a - b)
+    for (let i = 0; i < sorted.length; ) {
+      const start = sorted[i]
+      let end = start
+      while (sorted[i + 1] === end + 1) {
+        end += 1
+        i += 1
+      }
+      i += 1
+      const count = end - start + 1
+      result.push({
+        key: `paragraph-${start}`,
+        kind: 'paragraph',
+        lineIndex: start,
+        top: topOf(start),
+        label:
+          count > 1
+            ? `${excerpt(lines[start])}（共 ${count} 段）`
+            : excerpt(lines[start]),
+      })
+    }
+    return result
+  }, [favoriteChapters, layout, lines, starredLines])
 
   useLayoutEffect(() => {
     const probe = probeRef.current
@@ -180,7 +383,7 @@ function VirtualBook({
   }, [lines])
 
   return (
-    <div className="book-reader-content relative min-h-0 flex-1">
+    <div ref={contentRef} className="book-reader-content relative min-h-0 flex-1">
       {hasCurrentEstimates ? (
         <Virtuoso
           key={estimation.width}
@@ -190,8 +393,13 @@ function VirtualBook({
           heightEstimates={estimation.heights}
           initialTopMostItemIndex={initialTopMostItemIndex}
           rangeChanged={rangeChanged}
-          itemContent={(_index, line) => (
-            <BookLine imageBaseUrl={imageBaseUrl} line={line} />
+          itemContent={(index, line) => (
+            <BookLine
+              imageBaseUrl={imageBaseUrl}
+              line={line}
+              index={index}
+              starred={starredLines.has(index)}
+            />
           )}
           components={ReaderPadding}
           increaseViewportBy={{
@@ -200,6 +408,20 @@ function VirtualBook({
           }}
         />
       ) : null}
+      <FavoriteRail markers={markers} right={railRight} onJump={onJump} />
+      {selection && (
+        <ParagraphFavoriteButton
+          x={selection.x}
+          y={selection.y}
+          placeBelow={selection.placeBelow}
+          count={selection.lines.length}
+          allStarred={selection.lines.every((line) => starredLines.has(line))}
+          onToggle={() => {
+            onToggleLines(selection.lines)
+            clearSelection()
+          }}
+        />
+      )}
       <div
         aria-hidden="true"
         className="invisible absolute inset-0 overflow-y-scroll"
@@ -322,6 +544,8 @@ export function BookReader({
     toggleBookDeleted,
     toggleBookStarred,
     toggleChapterStarred,
+    starredLines,
+    toggleLines,
   } = useBookReadingSession({ bookId, surface, jumpRequest })
 
   if (!book) return null
@@ -342,12 +566,16 @@ export function BookReader({
   }
 
   const imageBaseUrl = getBookImageBaseUrl(book.path)
+  // The store's chapters carry live star toggles; content.chapters is the
+  // snapshot taken when the book loaded.
+  const chapters = book.chapters.length ? book.chapters : content.chapters
+  const favoriteChapters = chapters.filter((chapter) => chapter.starred)
 
   return (
     <div className="relative flex h-full w-full flex-col overflow-hidden">
       {content.chapters && (
         <TableOfContents
-          chapters={content.chapters}
+          chapters={chapters}
           currentChapterTitle={currentChapterTitle}
           isCollapsed={isTocCollapsed}
           onSelect={jumpTo}
@@ -431,6 +659,10 @@ export function BookReader({
         lines={lines}
         initialTopMostItemIndex={currentIndex}
         rangeChanged={trackRange}
+        starredLines={starredLines}
+        onToggleLines={toggleLines}
+        favoriteChapters={favoriteChapters}
+        onJump={jumpTo}
       />
     </div>
   )

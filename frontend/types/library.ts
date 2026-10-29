@@ -29,7 +29,13 @@ export interface LibraryNavStatus {
 
 export const FAVORITES_LIBRARY_ID = '__favorites__'
 
-export type FavoriteCategory = 'comic' | 'image' | 'book' | 'chapter' | 'video'
+export type FavoriteCategory =
+  | 'comic'
+  | 'image'
+  | 'book'
+  | 'chapter'
+  | 'paragraph'
+  | 'video'
 
 /** What the favorites view has selected in each category (device-local). */
 export interface FavoritesNavStatus {
@@ -38,6 +44,7 @@ export interface FavoritesNavStatus {
   imageKey?: string
   bookId?: string
   chapterKey?: string
+  paragraphId?: string
   videoId?: string
 }
 
@@ -50,6 +57,9 @@ export interface JumpRequest {
   id: string
   index: number
   seq: number
+  // Book jumps only: go to this favorited paragraph instead of `index`, once
+  // the reader has matched it against the current text.
+  paragraphId?: string
 }
 
 export interface Comic {

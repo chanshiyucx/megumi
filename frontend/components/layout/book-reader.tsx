@@ -25,9 +25,9 @@ const ReaderPadding = {
   Header: () => <div className="h-16" />,
   Footer: () => <div className="h-16" />,
 }
-// Rail offset from the right edge when scrollbars overlay the content (macOS)
-// and take no layout width. With the rail's w-4 it ends 24px in, clear of the
-// lines' pr-8 text edge.
+// Rail offset from the right edge when scrollbars overlay the content (macOS,
+// iOS) and take no layout width. With the rail's w-3 it ends 20px in, clear of
+// the lines' pr-6 text edge.
 const OVERLAY_SCROLLBAR_RAIL_OFFSET_PX = 8
 const MARKER_LABEL_LENGTH = 40
 
@@ -35,9 +35,9 @@ const TOP_OVERSCAN_PX = 800
 const BOTTOM_OVERSCAN_PX = 200
 const RESIZE_ESTIMATE_DELAY_MS = 120
 const BOOK_IMAGE_LINE_PATTERN = /^\s*\[\]\(([^/\\]+)\)\s*$/
-// Caps lines at about 40 CJK characters (plus pl-4 pr-8) so wide windows keep
+// Caps lines at about 40 CJK characters (plus pl-4 pr-6) so wide windows keep
 // a readable measure; narrower readers just use their full width.
-const LINE_MEASURE_CLASS = 'mx-auto w-full max-w-[calc(40em+3rem)]'
+const LINE_MEASURE_CLASS = 'mx-auto w-full max-w-[calc(40em+2.5rem)]'
 
 function parseBookImageFilename(line: string): string | null {
   const filename = BOOK_IMAGE_LINE_PATTERN.exec(line)?.[1].trim()
@@ -70,7 +70,7 @@ function BookLine({ imageBaseUrl, line, index, starred }: BookLineProps) {
 
   if (imageUrl && failedImageUrl !== imageUrl) {
     return (
-      <figure className={cn(LINE_MEASURE_CLASS, 'pr-8 pb-4 pl-4')}>
+      <figure className={cn(LINE_MEASURE_CLASS, 'pr-6 pb-4 pl-4')}>
         <img
           src={imageUrl}
           alt={imageFilename ?? '小说插图'}
@@ -87,9 +87,9 @@ function BookLine({ imageBaseUrl, line, index, starred }: BookLineProps) {
     <p
       data-line-index={index}
       className={cn(
-        // pr-8 keeps text clear of the favorites rail beside the scrollbar.
+        // pr-6 keeps text clear of the favorites rail beside the scrollbar.
         LINE_MEASURE_CLASS,
-        'text-text pr-8 pb-4 pl-4 font-serif leading-relaxed wrap-break-word whitespace-pre-wrap',
+        'text-text pr-6 pb-4 pl-4 font-serif leading-relaxed wrap-break-word whitespace-pre-wrap',
         starred &&
           'decoration-love/70 underline decoration-1 underline-offset-[0.3em]',
       )}
@@ -102,18 +102,19 @@ function BookLine({ imageBaseUrl, line, index, starred }: BookLineProps) {
 interface ParagraphFavoriteButtonProps {
   x: number
   y: number
-  placeBelow: boolean
+  docked: boolean
   count: number
   allStarred: boolean
   onToggle: () => void
 }
 
-// Floats over the current selection; acting on it favorites (or, when every
-// selected paragraph already is, unfavorites) the whole paragraphs touched.
+// Floats over the current selection (or, on touch screens, sits docked at the
+// bottom of the reader); acting on it favorites (or, when every selected
+// paragraph already is, unfavorites) the whole paragraphs touched.
 function ParagraphFavoriteButton({
   x,
   y,
-  placeBelow,
+  docked,
   count,
   allStarred,
   onToggle,
@@ -123,10 +124,12 @@ function ParagraphFavoriteButton({
     <button
       type="button"
       className={cn(
-        'bg-base text-text absolute z-20 flex -translate-x-1/2 items-center gap-1.5 rounded-sm border px-3 py-1.5 text-xs shadow-md',
-        placeBelow ? 'mt-2' : '-mt-2 -translate-y-full',
+        'bg-base text-text absolute z-20 flex -translate-x-1/2 items-center gap-1.5 rounded-sm border whitespace-nowrap shadow-md',
+        docked
+          ? 'bottom-[calc(1rem+env(safe-area-inset-bottom))] left-1/2 px-4 py-2 text-sm'
+          : '-mt-2 -translate-y-full px-3 py-1.5 text-xs',
       )}
-      style={{ left: x, top: y }}
+      style={docked ? undefined : { left: x, top: y }}
       // Keep the selection alive on desktop; the click acts on the paragraphs
       // captured from it anyway, in case a touch browser clears it first.
       onPointerDown={(e) => {
@@ -219,7 +222,7 @@ function FavoriteRail({ markers, right, onJump }: FavoriteRailProps) {
   return (
     <div
       aria-label="收藏位置"
-      className="pointer-events-none absolute inset-y-2 z-10 w-4"
+      className="pointer-events-none absolute inset-y-2 z-10 w-3"
       style={{ right }}
     >
       {markers.map((marker) => (
@@ -228,7 +231,7 @@ function FavoriteRail({ markers, right, onJump }: FavoriteRailProps) {
           type="button"
           title={marker.label}
           aria-label={marker.label}
-          className="pointer-events-auto absolute left-1/2 flex h-4 w-4 -translate-x-1/2 -translate-y-1/2 items-center justify-center"
+          className="pointer-events-auto absolute left-1/2 flex h-4 w-3 -translate-x-1/2 -translate-y-1/2 items-center justify-center"
           style={{ top: `${marker.top}%` }}
           onClick={() => {
             onJump(marker.lineIndex)
@@ -238,7 +241,7 @@ function FavoriteRail({ markers, right, onJump }: FavoriteRailProps) {
             className={cn(
               'rounded-full',
               marker.kind === 'chapter'
-                ? 'bg-gold h-0.5 w-3'
+                ? 'bg-gold h-0.5 w-2.5'
                 : 'bg-love h-1.5 w-1.5',
             )}
           />
@@ -454,7 +457,7 @@ function VirtualBook({
         <ParagraphFavoriteButton
           x={selection.x}
           y={selection.y}
-          placeBelow={selection.placeBelow}
+          docked={selection.docked}
           count={selection.lines.length}
           allStarred={selection.lines.every((line) => starredLines.has(line))}
           onToggle={() => {

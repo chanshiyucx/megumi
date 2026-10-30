@@ -6,12 +6,14 @@ export interface ParagraphSelection {
   // Anchor point for the floating button, relative to the container.
   x: number
   y: number
-  // Touch devices put the button under the selection, clear of the system
-  // copy menu that appears above it.
-  placeBelow: boolean
+  // Touch screens dock the button at the bottom of the reader instead: the
+  // system copy / translate menu pops up above or below the selection,
+  // wherever there is room, and a web page can neither move nor extend it.
+  docked: boolean
 }
 
-const BUTTON_EDGE_MARGIN = 48
+// Half the widest button ("取消收藏 99 段") plus a gap from the reader edge.
+const BUTTON_EDGE_MARGIN = 64
 
 function lineElementOf(node: Node) {
   const element = node instanceof Element ? node : node.parentElement
@@ -62,8 +64,7 @@ export function useParagraphSelection(
 
     const rect = range.getBoundingClientRect()
     const box = container.getBoundingClientRect()
-    const placeBelow = window.matchMedia('(pointer: coarse)').matches
-    const edge = placeBelow ? rect.bottom : rect.top
+    const docked = window.matchMedia('(pointer: coarse)').matches
     return {
       lines,
       x: Math.min(
@@ -71,8 +72,11 @@ export function useParagraphSelection(
         box.width - BUTTON_EDGE_MARGIN,
       ),
       // Keep the button inside the reader when the selection runs off-screen.
-      y: Math.min(Math.max(edge - box.top, BUTTON_EDGE_MARGIN), box.height - BUTTON_EDGE_MARGIN),
-      placeBelow,
+      y: Math.min(
+        Math.max(rect.top - box.top, BUTTON_EDGE_MARGIN),
+        box.height - BUTTON_EDGE_MARGIN,
+      ),
+      docked,
     }
   })
 

@@ -1,16 +1,14 @@
 import { SquareMenu, Star, StepForward, Trash2 } from 'lucide-react'
 import {
   type RefObject,
+  useEffect,
+  useEffectEvent,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from 'react'
-import {
-  type ListRange,
-  Virtuoso,
-  type VirtuosoHandle,
-} from 'react-virtuoso'
+import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Spinner } from '@/components/ui/spinner'
@@ -36,6 +34,9 @@ const TOP_OVERSCAN_PX = 800
 const BOTTOM_OVERSCAN_PX = 200
 const RESIZE_ESTIMATE_DELAY_MS = 120
 const BOOK_IMAGE_LINE_PATTERN = /^\s*\[\]\(([^/\\]+)\)\s*$/
+// Caps lines at about 40 CJK characters (plus pl-4 pr-8) so wide windows keep
+// a readable measure; narrower readers just use their full width.
+const LINE_MEASURE_CLASS = 'mx-auto w-full max-w-[calc(40em+3rem)]'
 
 function parseBookImageFilename(line: string): string | null {
   const filename = BOOK_IMAGE_LINE_PATTERN.exec(line)?.[1].trim()
@@ -68,7 +69,7 @@ function BookLine({ imageBaseUrl, line, index, starred }: BookLineProps) {
 
   if (imageUrl && failedImageUrl !== imageUrl) {
     return (
-      <figure className="mx-auto w-full pr-8 pb-4 pl-4">
+      <figure className={cn(LINE_MEASURE_CLASS, 'pr-8 pb-4 pl-4')}>
         <img
           src={imageUrl}
           alt={imageFilename ?? '小说插图'}
@@ -86,7 +87,8 @@ function BookLine({ imageBaseUrl, line, index, starred }: BookLineProps) {
       data-line-index={index}
       className={cn(
         // pr-8 keeps text clear of the favorites rail beside the scrollbar.
-        'text-text mx-auto w-full pr-8 pb-4 pl-4 font-serif leading-relaxed wrap-break-word whitespace-pre-wrap',
+        LINE_MEASURE_CLASS,
+        'text-text pr-8 pb-4 pl-4 font-serif leading-relaxed wrap-break-word whitespace-pre-wrap',
         starred &&
           'decoration-love/70 underline decoration-1 underline-offset-[0.3em]',
       )}
@@ -245,6 +247,19 @@ function FavoriteRail({ markers, right, onJump }: FavoriteRailProps) {
   )
 }
 
+// First line whose bottom is below the top edge of the scroller. Virtuoso's
+// rangeChanged reports the rendered range, which starts TOP_OVERSCAN_PX above
+// the viewport, so progress taken from it lagged behind the reading position.
+function topVisibleLine(scroller: HTMLElement) {
+  const top = scroller.getBoundingClientRect().top
+  for (const item of scroller.querySelectorAll<HTMLElement>('[data-index]')) {
+    if (item.getBoundingClientRect().bottom > top) {
+      return Number(item.dataset.index)
+    }
+  }
+  return null
+}
+
 function excerpt(line: string) {
   const text = line.trim()
   return text.length > MARKER_LABEL_LENGTH
@@ -256,7 +271,7 @@ interface VirtualBookProps {
   imageBaseUrl: string | null
   initialTopMostItemIndex: number
   lines: readonly string[]
-  rangeChanged: (range: ListRange) => void
+  onTopLineChange: (lineIndex: number) => void
   virtuosoRef: RefObject<VirtuosoHandle | null>
   starredLines: ReadonlySet<number>
   onToggleLines: (lineIndices: number[]) => void
@@ -268,7 +283,7 @@ function VirtualBook({
   imageBaseUrl,
   initialTopMostItemIndex,
   lines,
-  rangeChanged,
+  onTopLineChange,
   virtuosoRef,
   starredLines,
   onToggleLines,
@@ -289,6 +304,29 @@ function VirtualBook({
   } | null>(null)
   const hasCurrentEstimates = estimation?.lines === lines
   const [railRight, setRailRight] = useState(OVERLAY_SCROLLBAR_RAIL_OFFSET_PX)
+  const [scroller, setScroller] = useState<HTMLElement | null>(null)
+  const reportTopLine = useEffectEvent(() => {
+    if (!scroller) return
+    const lineIndex = topVisibleLine(scroller)
+    if (lineIndex !== null) onTopLineChange(lineIndex)
+  })
+
+  useEffect(() => {
+    if (!scroller) return
+    let frame: number | null = null
+    const handleScroll = () => {
+      if (frame !== null) return
+      frame = requestAnimationFrame(() => {
+        frame = null
+        reportTopLine()
+      })
+    }
+    scroller.addEventListener('scroll', handleScroll, { passive: true })
+    return () => {
+      if (frame !== null) cancelAnimationFrame(frame)
+      scroller.removeEventListener('scroll', handleScroll)
+    }
+  }, [scroller])
 
   // Sit just left of a classic scrollbar; overlay scrollbars take no width.
   useLayoutEffect(() => {
@@ -392,7 +430,9 @@ function VirtualBook({
           data={lines}
           heightEstimates={estimation.heights}
           initialTopMostItemIndex={initialTopMostItemIndex}
-          rangeChanged={rangeChanged}
+          scrollerRef={(element) => {
+            setScroller(element instanceof HTMLElement ? element : null)
+          }}
           itemContent={(index, line) => (
             <BookLine
               imageBaseUrl={imageBaseUrl}
@@ -452,8 +492,18 @@ function TableOfContents({
   onClose,
 }: TableOfContentsProps) {
   const tocRef = useRef<HTMLDivElement>(null)
+  const scrollRef = useRef<HTMLDivElement>(null)
 
   useClickOutside(tocRef, onClose, !isCollapsed)
+
+  // Open at the chapter being read; later progress changes leave the list
+  // where the reader has scrolled it.
+  useEffect(() => {
+    if (isCollapsed) return
+    scrollRef.current
+      ?.querySelector('[data-active]')
+      ?.scrollIntoView({ block: 'center' })
+  }, [isCollapsed])
 
   return (
     <div
@@ -463,13 +513,14 @@ function TableOfContents({
         isCollapsed ? '-translate-x-full' : 'translate-x-0',
       )}
     >
-      <ScrollArea viewportClassName="h-full" className="pb-12">
+      <ScrollArea ref={scrollRef} viewportClassName="h-full" className="pb-12">
         {chapters.map((chapter) => {
           const isFavorite = chapter.starred
           const isActiveLine = currentChapterTitle === chapter.title
           return (
             <div
               key={chapter.lineIndex}
+              data-active={isActiveLine || undefined}
               className="group hover:bg-overlay flex w-full cursor-pointer items-center gap-2 px-4 py-2 text-left text-sm"
               onClick={() => {
                 onSelect(chapter.lineIndex)
@@ -539,7 +590,7 @@ export function BookReader({
     closeToc,
     toggleToc,
     jumpTo,
-    trackRange,
+    trackTopLine,
     continueReading,
     toggleBookDeleted,
     toggleBookStarred,
@@ -658,7 +709,7 @@ export function BookReader({
         virtuosoRef={virtuosoRef}
         lines={lines}
         initialTopMostItemIndex={currentIndex}
-        rangeChanged={trackRange}
+        onTopLineChange={trackTopLine}
         starredLines={starredLines}
         onToggleLines={toggleLines}
         favoriteChapters={favoriteChapters}

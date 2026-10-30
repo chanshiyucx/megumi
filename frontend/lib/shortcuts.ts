@@ -22,4 +22,5 @@ export const SHORTCUTS = {
   // Image preview navigation
   prevImage: 'ArrowLeft',
   nextImage: 'ArrowRight',
+  closePreview: 'Escape',
 } as const

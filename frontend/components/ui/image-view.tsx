@@ -34,6 +34,7 @@ export function GridImage({
   className,
   onTags,
   tagOnTap,
+  loading,
 }: GridImageProps) {
   return (
     <GridItem
@@ -44,6 +45,7 @@ export function GridImage({
       deleted={image.deleted}
       isSelected={isSelected}
       tagOnTap={tagOnTap}
+      loading={loading}
       onClick={() => onClick?.(image.index)}
       onDoubleClick={() => onDoubleClick?.(image.index)}
       onStar={
@@ -198,6 +200,9 @@ function ImagePreview({
         break
       case SHORTCUTS.nextImage:
         goNext()
+        break
+      case SHORTCUTS.closePreview:
+        onDoubleClick?.(index)
         break
     }
   })

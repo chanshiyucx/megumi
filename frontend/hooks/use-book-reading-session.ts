@@ -23,6 +23,7 @@ import {
 } from '@/types/library'
 
 const EMPTY_LINES: string[] = []
+const JUMP_REALIGN_FRAMES = 10
 
 interface BookData {
   bookId: string
@@ -72,6 +73,7 @@ export function useBookReadingSession({
   const throttledUpdateProgress = useThrottledProgress(updateBookProgress)
   const refreshTokenRef = useRef({ bookId, token: bookRefreshToken })
   const handledJumpRef = useRef(0)
+  const realignFrameRef = useRef<number | null>(null)
 
   const jumpTo = (targetIndex?: number) => {
     if (!book || !content) return
@@ -85,10 +87,24 @@ export function useBookReadingSession({
     updateBookProgress(book.id, newProgress)
 
     lockScroll()
-    virtuosoRef.current?.scrollToIndex({
-      index,
-      align: 'start',
-    })
+    const scrollToLine = () => {
+      virtuosoRef.current?.scrollToIndex({ index, align: 'start' })
+    }
+    scrollToLine()
+    // A long jump scrolls by estimated heights and stops short once the lines
+    // around the target are measured; keep aiming for a few frames until they
+    // are. Aiming at a line already at the top does not move the list.
+    if (realignFrameRef.current !== null) {
+      cancelAnimationFrame(realignFrameRef.current)
+    }
+    let frames = 0
+    const realign = () => {
+      scrollToLine()
+      frames += 1
+      realignFrameRef.current =
+        frames < JUMP_REALIGN_FRAMES ? requestAnimationFrame(realign) : null
+    }
+    realignFrameRef.current = requestAnimationFrame(realign)
   }
   const jumpToFn = useEffectEvent(jumpTo)
 
@@ -147,18 +163,30 @@ export function useBookReadingSession({
     lockScroll()
   }, [lockScroll, bookId])
 
+  // The library reuses this reader across books and virtuosoRef follows the
+  // new list, so a pending realign must not outlive the book it aims into.
+  useEffect(
+    () => () => {
+      if (realignFrameRef.current !== null) {
+        cancelAnimationFrame(realignFrameRef.current)
+        realignFrameRef.current = null
+      }
+    },
+    [bookId],
+  )
+
   useLayoutEffect(() => {
     if (surface === 'tab' && activeTab !== bookId) return
     if (surface === 'library' && activeTab) return
     jumpToFn()
   }, [activeTab, bookId, surface])
 
-  const trackRange = (range: { startIndex: number; endIndex: number }) => {
+  const trackTopLine = (lineIndex: number) => {
     if (isLock.current) return
     if (!book || !content) return
 
     const newProgress = createBookProgress(
-      range.startIndex,
+      lineIndex,
       content.lines.length,
       content.chapters,
     )
@@ -243,7 +271,7 @@ export function useBookReadingSession({
     closeToc,
     toggleToc,
     jumpTo,
-    trackRange,
+    trackTopLine,
     continueReading,
     toggleBookDeleted,
     toggleBookStarred,

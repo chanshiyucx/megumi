@@ -78,6 +78,9 @@ function TableOfContents({
                 className="w-full"
                 comicId={comicId}
                 image={img}
+                // Only the strip around the current page loads; long comics
+                // would otherwise fetch every thumbnail when the TOC opens.
+                loading="lazy"
                 isSelected={currentIndex === img.index}
                 onClick={() => {
                   onSelect(img.index)

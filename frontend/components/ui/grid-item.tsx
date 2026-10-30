@@ -22,6 +22,7 @@ interface GridItemProps {
   // bottom) and runs onClick; tapping again hides them. Active tags stay shown
   // either way. Used for page thumbnails; covers/TOC select on tap.
   tagOnTap?: boolean
+  loading?: 'eager' | 'lazy'
   onClick: () => void
   onDoubleClick?: () => void
   onContextMenu?: (e: MouseEvent) => void
@@ -39,6 +40,7 @@ export function GridItem({
   progress,
   duration,
   tagOnTap,
+  loading,
   onClick,
   onDoubleClick,
   onContextMenu,
@@ -68,6 +70,7 @@ export function GridItem({
         src={cover}
         alt={title}
         decoding="async"
+        loading={loading}
         className={cn('h-full w-full object-cover', deleted && 'grayscale')}
       />
       <TagOverlay

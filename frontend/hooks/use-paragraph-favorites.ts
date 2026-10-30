@@ -3,6 +3,7 @@ import {
   createAnchor,
   indexBook,
   matchAnchor,
+  type BookParagraphIndex,
   type ParagraphMatch,
 } from '@/lib/paragraph-anchor'
 import {
@@ -13,6 +14,28 @@ import { useParagraphsStore } from '@/store/paragraphs'
 import type { Book, BookContent } from '@/types/library'
 
 const EMPTY_LINES: ReadonlySet<number> = new Set()
+
+// Match results per loaded text, per favorite object. The store keeps the
+// objects of untouched favorites across writes (immer), so toggling one
+// paragraph only matches the new or changed anchors instead of the whole book's.
+const matchCache = new WeakMap<
+  BookParagraphIndex,
+  WeakMap<ParagraphFavorite, ParagraphMatch | null>
+>()
+
+function cachedMatch(index: BookParagraphIndex, favorite: ParagraphFavorite) {
+  let byFavorite = matchCache.get(index)
+  if (!byFavorite) {
+    byFavorite = new WeakMap()
+    matchCache.set(index, byFavorite)
+  }
+  let match = byFavorite.get(favorite)
+  if (match === undefined) {
+    match = matchAnchor(index, favorite)
+    byFavorite.set(favorite, match)
+  }
+  return match
+}
 
 /**
  * Paragraph favorites for one loaded book: matches the stored anchors against
@@ -57,7 +80,7 @@ export function useParagraphFavorites(
     const result = new Map<string, ParagraphMatch | null>()
     if (!index) return result
     for (const favorite of favorites) {
-      result.set(favorite.id, matchAnchor(index, favorite))
+      result.set(favorite.id, cachedMatch(index, favorite))
     }
     return result
   }, [favorites, index])

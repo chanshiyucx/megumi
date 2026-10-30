@@ -167,9 +167,11 @@ function estimateLineHeights(
   const context = document.createElement('canvas').getContext('2d')
 
   if (context) {
-    context.font =
-      style.font ||
-      `${style.fontStyle} ${style.fontVariant} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`
+    // Not style.font: it is empty when a longhand has no shorthand form (the
+    // page's tabular-nums), and canvas silently keeps 10px sans-serif for a
+    // font string it cannot parse, such as one carrying that font-variant.
+    // Every estimate then came out a line or so short.
+    context.font = `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`
   }
 
   const fullWidthCharacter = context?.measureText('汉').width || fontSize

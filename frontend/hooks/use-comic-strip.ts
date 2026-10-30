@@ -304,6 +304,26 @@ function getJumpOffset(layout: ComicStripLayout, index: number) {
   )
 }
 
+/**
+ * Where `offset`, a scroll offset in `from`, lands in `to`: on the same page,
+ * the same fraction of the way into it. A resize keeps the reader on the spot
+ * they were reading instead of snapping it to the start of a page.
+ */
+function getAnchoredOffset(
+  from: ComicStripLayout,
+  to: ComicStripLayout,
+  offset: number,
+) {
+  const page = from.pages[findFirstPageEndingAfter(from.pages, offset)]
+  const target = to.pages[Math.min(page.index, to.pages.length - 1)]
+  const ratio = clamp((offset - page.start) / page.size, 0, 1)
+  return clamp(
+    Math.round(target.start + ratio * target.size),
+    0,
+    Math.max(0, to.totalSize - to.viewportSize),
+  )
+}
+
 function getScrollOffset(
   container: HTMLDivElement,
   orientation: ComicStripOrientation,
@@ -333,6 +353,9 @@ export function useComicStrip({
   const currentIndexRef = useRef(initialIndex)
   const visibleRangeRef = useRef<VisibleRange>({ start: 0, end: 0 })
   const layoutRef = useRef<ComicStripLayout | null>(null)
+  // The layout the current scroll offset was set in, for anchoring it when
+  // the layout changes.
+  const scrolledLayoutRef = useRef<ComicStripLayout | null>(null)
   const onCurrentIndexChangeRef =
     useRef<UseComicStripOptions['onCurrentIndexChange']>(onCurrentIndexChange)
 
@@ -432,6 +455,7 @@ export function useComicStrip({
     const targetOffset = getJumpOffset(layout, nextIndex)
 
     pendingJumpRef.current = null
+    scrolledLayoutRef.current = layout
     // Reading goes on forward from wherever a jump lands, even a jump back.
     pendingScrollOffsetRef.current = targetOffset
     directionRef.current = 1
@@ -480,6 +504,10 @@ export function useComicStrip({
     const updateSize = () => {
       const width = container.clientWidth
       const height = container.clientHeight
+      // A hidden strip (a background tab, the library's reader on a phone)
+      // measures 0. Keep the last layout: the content keeps its size, so the
+      // browser keeps the scroll offset and shows the same spot again.
+      if (width <= 0 || height <= 0) return
       setContainerSize((prev) =>
         prev.width === width && prev.height === height
           ? prev
@@ -502,28 +530,40 @@ export function useComicStrip({
       currentIndexRef.current = 0
       visibleRangeRef.current = { start: 0, end: 0 }
       pendingJumpRef.current = 0
+      scrolledLayoutRef.current = null
       return
     }
 
     const currentLayout = layoutRef.current
-    if (!currentLayout) return
-
-    const targetIndex = pendingJumpRef.current ?? currentIndexRef.current
-    const nextIndex = clamp(targetIndex, 0, images.length - 1)
-    currentIndexRef.current = nextIndex
-
     const container = containerRef.current
-    if (!container) {
-      pendingJumpRef.current = nextIndex
-      return
+    if (!currentLayout || !container) return
+
+    const previousLayout = scrolledLayoutRef.current
+    scrolledLayoutRef.current = currentLayout
+    let targetOffset: number
+    if (pendingJumpRef.current === null && previousLayout) {
+      targetOffset = getAnchoredOffset(
+        previousLayout,
+        currentLayout,
+        pendingScrollOffsetRef.current,
+      )
+      // A new viewport may put another page mostly in view.
+      const nextIndex = getComicStripCurrentIndex(currentLayout, targetOffset)
+      if (nextIndex !== currentIndexRef.current) {
+        currentIndexRef.current = nextIndex
+        onCurrentIndexChangeRef.current?.(nextIndex)
+      }
+    } else {
+      const targetIndex = pendingJumpRef.current ?? currentIndexRef.current
+      const nextIndex = clamp(targetIndex, 0, images.length - 1)
+      currentIndexRef.current = nextIndex
+      targetOffset = getJumpOffset(currentLayout, nextIndex)
+      pendingJumpRef.current = null
+      // Reading goes on forward from wherever a jump lands, even a jump back.
+      directionRef.current = 1
     }
 
-    const targetOffset = getJumpOffset(currentLayout, nextIndex)
-
-    pendingJumpRef.current = null
-    // Reading goes on forward from wherever a jump lands, even a jump back.
     pendingScrollOffsetRef.current = targetOffset
-    directionRef.current = 1
     if (orientation === 'horizontal') {
       container.scrollLeft = targetOffset
     } else {
@@ -559,6 +599,7 @@ export function useComicStrip({
 
   return {
     containerRef,
+    currentIndex: () => currentIndexRef.current,
     jumpTo,
     step,
     layout,

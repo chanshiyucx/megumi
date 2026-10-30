@@ -85,10 +85,13 @@ export function useComicReadingSession({
   const acceptRemote = useProgressStore((s) => s.acceptRemote)
   const dismissRemote = useProgressStore((s) => s.dismissRemote)
   const savedIndex = progress?.current ?? 0
+  // Whether the page strip is in view: the reader tab in front, or the
+  // library's strip with no tab over it. It then shows the comic's reading
+  // position, so another device's newer one is offered instead of applied.
   const stripVisible =
     surface.kind === 'reader'
       ? activeTab === comicId
-      : surface.readerVisible && surface.viewMode === 'scroll'
+      : surface.readerVisible && surface.viewMode === 'scroll' && !activeTab
   const tagTargetPolicy: ComicTagTargetPolicy =
     surface.kind === 'reader'
       ? 'reader'
@@ -99,14 +102,6 @@ export function useComicReadingSession({
     surface.kind === 'reader'
       ? activeTab === comicId
       : !activeTab && surface.readerVisible
-
-  // Whether this surface shows the comic's reading position right now: the
-  // reader tab in front, or the library's page strip with no tab over it.
-  // Another device's newer position is then offered instead of applied.
-  const showsPosition =
-    surface.kind === 'reader'
-      ? activeTab === comicId
-      : stripVisible && !activeTab
 
   const [previewIndex, setPreviewIndex] = useState(-1)
   const currentIndex = images.length
@@ -120,9 +115,9 @@ export function useComicReadingSession({
   }, [currentIndex])
 
   useEffect(() => {
-    if (!showsPosition) return
+    if (!stripVisible) return
     return watchProgress('comics', comicId)
-  }, [comicId, showsPosition])
+  }, [comicId, stripVisible])
 
   const comicPath = comic?.path
   useEffect(() => {
@@ -130,9 +125,15 @@ export function useComicReadingSession({
     void getComicImages(comicId)
   }, [comicId, comicImageStatus, comicPath, getComicImages])
 
+  // A strip coming back into view is still where it was left, to the pixel.
+  // Move it only if the position changed meanwhile: read in another tab or
+  // the library, or taken from another device while out of view.
   useLayoutEffect(() => {
     if (!stripVisible || !images.length) return
-    stripRef.current?.jumpTo(currentIndexRef.current)
+    const strip = stripRef.current
+    if (strip && strip.currentIndex() !== currentIndexRef.current) {
+      strip.jumpTo(currentIndexRef.current)
+    }
   }, [comicId, images.length, stripRef, stripVisible])
 
   const saveIndex = (index: number) => {

@@ -87,6 +87,8 @@ export function useBookReadingSession({
   const refreshTokenRef = useRef({ bookId, token: bookRefreshToken })
   const handledJumpRef = useRef(0)
   const realignFrameRef = useRef<number | null>(null)
+  // The line this reader's list has at the top: last reported or jumped to.
+  const shownLineRef = useRef<number | null>(null)
 
   const jumpTo = (targetIndex?: number) => {
     if (!book || !content) return
@@ -102,6 +104,7 @@ export function useBookReadingSession({
       content.chapters,
     )
     updateBookProgress(book.id, newProgress)
+    shownLineRef.current = index
 
     lockScroll()
     const scrollToLine = () => {
@@ -197,15 +200,20 @@ export function useBookReadingSession({
         cancelAnimationFrame(realignFrameRef.current)
         realignFrameRef.current = null
       }
+      shownLineRef.current = null
     },
     [bookId],
   )
 
+  // A reader coming back into view is still where it was left, to the pixel;
+  // aiming at the saved line again would drop the part of it scrolled past.
+  // Move it only if the position changed meanwhile: read in another tab or
+  // the library, or taken from another device while out of view.
   useLayoutEffect(() => {
-    if (surface === 'tab' && activeTab !== bookId) return
-    if (surface === 'library' && activeTab) return
-    jumpToFn()
-  }, [activeTab, bookId, surface])
+    if (!showsPosition) return
+    const saved = useProgressStore.getState().books[bookId]?.current ?? 0
+    if (shownLineRef.current !== saved) jumpToFn()
+  }, [bookId, showsPosition])
 
   // The list opens at the saved line by estimated heights and can land a few
   // lines off; aim again once the text is in, the same way a jump does.
@@ -220,6 +228,7 @@ export function useBookReadingSession({
     if (isLock.current) return
     if (!book || !content) return
 
+    shownLineRef.current = lineIndex
     const newProgress = createBookProgress(
       lineIndex,
       content.lines.length,

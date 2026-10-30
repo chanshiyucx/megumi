@@ -13,6 +13,8 @@ import { cn } from '@/lib/style'
 import type { FileTags, Image } from '@/types/library'
 
 export interface ComicStripHandle {
+  // The page the strip is on: the one it last reported, or is jumping to.
+  currentIndex: () => number
   jumpTo: (index?: number) => void
   // Smoothly moves one page forward (1) or back (-1); see getStepOffset.
   step: (direction: 1 | -1) => void
@@ -98,18 +100,29 @@ export const ComicStrip = forwardRef<ComicStripHandle, ComicStripProps>(
     // Mark mode: every page in view shows its tag controls, for a finger,
     // which cannot hover. Moving to another page leaves it.
     const [marking, setMarking] = useState(false)
-    const { containerRef, jumpTo, step, layout, onScroll, visibleRange } =
-      useComicStrip({
-        images,
-        initialIndex,
-        orientation,
-        onCurrentIndexChange: (index) => {
-          setMarking(false)
-          onCurrentIndexChange?.(index)
-        },
-      })
+    const {
+      containerRef,
+      currentIndex,
+      jumpTo,
+      step,
+      layout,
+      onScroll,
+      visibleRange,
+    } = useComicStrip({
+      images,
+      initialIndex,
+      orientation,
+      onCurrentIndexChange: (index) => {
+        setMarking(false)
+        onCurrentIndexChange?.(index)
+      },
+    })
 
-    useImperativeHandle(ref, () => ({ jumpTo, step }), [jumpTo, step])
+    useImperativeHandle(ref, () => ({ currentIndex, jumpTo, step }), [
+      currentIndex,
+      jumpTo,
+      step,
+    ])
 
     // A finger taps the first / last third of the strip (along its reading
     // axis) to step a page at once, and the middle for mark mode; a double

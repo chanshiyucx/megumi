@@ -31,9 +31,9 @@ const MARKER_LABEL_LENGTH = 40
 const MARKER_SIZE_PX = 16
 
 const BOOK_IMAGE_LINE_PATTERN = /^\s*\[\]\(([^/\\]+)\)\s*$/
-// Caps lines at about 40 CJK characters (plus pl-4 pr-6) so wide windows keep
+// Caps lines at about 60 CJK characters (plus pl-4 pr-6) so wide windows keep
 // a readable measure; narrower readers just use their full width.
-const LINE_MEASURE_CLASS = 'mx-auto w-full max-w-[calc(40em+2.5rem)]'
+const LINE_MEASURE_CLASS = 'mx-auto w-full max-w-[calc(60em+2.5rem)]'
 
 function parseBookImageFilename(line: string): string | null {
   const filename = BOOK_IMAGE_LINE_PATTERN.exec(line)?.[1].trim()

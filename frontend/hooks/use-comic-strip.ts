@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { Image } from '@/types/library'
 
 // Pages kept mounted (and so loaded) around the viewport, in viewports: more
@@ -392,15 +392,11 @@ export function useComicStrip({
   })
   const [visibleRange, setVisibleRange] = useState<VisibleRange>(EMPTY_RANGE)
 
-  const layout = useMemo(
-    () =>
-      createLayout(
-        images,
-        containerSize.width,
-        containerSize.height,
-        orientation,
-      ),
-    [containerSize.height, containerSize.width, images, orientation],
+  const layout = createLayout(
+    images,
+    containerSize.width,
+    containerSize.height,
+    orientation,
   )
   const layoutRestoreKey = `${containerSize.width}x${containerSize.height}:${orientation}:${images
     .map((image) => `${image.width}x${image.height}`)
@@ -515,10 +511,11 @@ export function useComicStrip({
       stepTimerRef.current = null
     }, STEP_SETTLE_MS)
 
-    container.scrollTo({
-      [orientation === 'horizontal' ? 'left' : 'top']: target,
-      behavior: 'smooth',
-    })
+    container.scrollTo(
+      orientation === 'horizontal'
+        ? { left: target, behavior: 'smooth' }
+        : { top: target, behavior: 'smooth' },
+    )
   }
 
   useLayoutEffect(() => {

@@ -46,6 +46,8 @@ interface StripPageProps {
   onTags: (id: string, imageKey: string, tags: FileTags) => Promise<void>
 }
 
+// memo even with the compiler: a scroll that moves the rendered range
+// rebuilds the page list, and pages already on screen should not render again.
 const StripPage = memo(function StripPage({
   comicId,
   image,

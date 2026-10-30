@@ -147,9 +147,9 @@ export function useBookReadingSession({
         if (!cancelled) setBookData({ bookId, content })
       } catch (e) {
         console.error('Failed to load book', e)
-      } finally {
-        if (!cancelled) setIsLoading(false)
       }
+      // Not in a finally block: the React Compiler skips functions with one.
+      if (!cancelled) setIsLoading(false)
     }
     void load()
     return () => {

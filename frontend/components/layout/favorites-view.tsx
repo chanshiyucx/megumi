@@ -1,5 +1,5 @@
 import { Book as BookIcon, Star } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { VirtuosoGrid } from 'react-virtuoso'
 import { Button } from '@/components/ui/button'
 import { COVER_GRID_CLASS } from '@/components/ui/grid-item'
@@ -67,36 +67,20 @@ function useFavoriteSources(): FavoriteSources {
     (s) => s.favoriteChapterBookIds,
   )
 
-  return useMemo(
-    () => ({
-      libraries,
-      comics,
-      authors,
-      books,
-      videos,
-      libraryComics,
-      libraryAuthors,
-      authorBooks,
-      libraryVideos,
-      comicImages,
-      favoriteImageComicIds,
-      favoriteChapterBookIds,
-    }),
-    [
-      libraries,
-      comics,
-      authors,
-      books,
-      videos,
-      libraryComics,
-      libraryAuthors,
-      authorBooks,
-      libraryVideos,
-      comicImages,
-      favoriteImageComicIds,
-      favoriteChapterBookIds,
-    ],
-  )
+  return {
+    libraries,
+    comics,
+    authors,
+    books,
+    videos,
+    libraryComics,
+    libraryAuthors,
+    authorBooks,
+    libraryVideos,
+    comicImages,
+    favoriteImageComicIds,
+    favoriteChapterBookIds,
+  }
 }
 
 function collectFavorites(src: FavoriteSources, retained: ReadonlySet<string>) {
@@ -280,24 +264,18 @@ export function FavoritesView() {
 
   const retainedKeys =
     retained.category === category ? retained.keys : NO_RETAINED
-  const favorites = useMemo(
-    () => collectFavorites(src, retainedKeys),
-    [src, retainedKeys],
+  const favorites = collectFavorites(src, retainedKeys)
+  const paragraphGroups = favoriteParagraphGroups(
+    src,
+    paragraphs,
+    removedParagraphs,
   )
-  const paragraphGroups = useMemo(
-    () => favoriteParagraphGroups(src, paragraphs, removedParagraphs),
-    [paragraphs, removedParagraphs, src],
-  )
-  const counts = useMemo(
-    () =>
-      countFavorites(
-        collectFavorites(src, NO_RETAINED),
-        favoriteParagraphGroups(src, paragraphs, {}).reduce(
-          (sum, group) => sum + group.blocks.length,
-          0,
-        ),
-      ),
-    [paragraphs, src],
+  const counts = countFavorites(
+    collectFavorites(src, NO_RETAINED),
+    favoriteParagraphGroups(src, paragraphs, {}).reduce(
+      (sum, group) => sum + group.blocks.length,
+      0,
+    ),
   )
 
   // Remember every starred item shown in this category so unstarring it keeps

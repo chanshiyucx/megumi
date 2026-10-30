@@ -6,7 +6,6 @@ import {
   useEffectEvent,
   useImperativeHandle,
   useLayoutEffect,
-  useMemo,
   useRef,
   useState,
 } from 'react'
@@ -56,6 +55,8 @@ interface BookLineProps {
   starred?: boolean
 }
 
+// memo even with the compiler: a favorite toggled rebuilds the whole list,
+// and only the lines whose props changed should render again.
 const BookLine = memo(function BookLine({
   imageBaseUrl,
   line,
@@ -234,10 +235,7 @@ function FavoriteRail({
   // The rail alone follows the position, so scrolling re-renders only it.
   const currentLine = useProgressStore((s) => s.books[bookId]?.current ?? 0)
   const hasMarkers = markers.length > 0
-  const groups = useMemo(
-    () => groupMarkers(markers, railHeight),
-    [markers, railHeight],
-  )
+  const groups = groupMarkers(markers, railHeight)
 
   useLayoutEffect(() => {
     const rail = railRef.current
@@ -329,31 +327,6 @@ export interface BookTextHandle {
   // Puts the line at the top of the reader.
   scrollToLine: (lineIndex: number) => void
 }
-
-interface BookLinesProps {
-  imageBaseUrl: string | null
-  lines: readonly string[]
-  starredLines: ReadonlySet<number>
-}
-
-// Every line of the book, rendered at once. Kept apart from the reader's
-// selection state so a selection does not walk thousands of lines; BookLine's
-// memo then re-renders only the lines a favorite toggles.
-const BookLines = memo(function BookLines({
-  imageBaseUrl,
-  lines,
-  starredLines,
-}: BookLinesProps) {
-  return lines.map((line, index) => (
-    <BookLine
-      key={index}
-      imageBaseUrl={imageBaseUrl}
-      line={line}
-      index={index}
-      starred={starredLines.has(index)}
-    />
-  ))
-})
 
 interface BookTextProps {
   ref: Ref<BookTextHandle>
@@ -476,21 +449,19 @@ function BookText({
     }
   }, [lines])
 
-  const topOf = useMemo(
-    () => (lineIndex: number) => lineTops?.[lineIndex] ?? 0,
-    [lineTops],
-  )
+  const topOf = (lineIndex: number) => lineTops?.[lineIndex] ?? 0
 
-  const markers = useMemo(() => {
-    if (!lineTops) return []
-
-    const result: FavoriteMarker[] = favoriteChapters.map((chapter) => ({
-      key: `chapter-${chapter.lineIndex}`,
-      kind: 'chapter',
-      lineIndex: chapter.lineIndex,
-      top: topOf(chapter.lineIndex),
-      label: `章节：${chapter.title}`,
-    }))
+  const markers: FavoriteMarker[] = []
+  if (lineTops) {
+    for (const chapter of favoriteChapters) {
+      markers.push({
+        key: `chapter-${chapter.lineIndex}`,
+        kind: 'chapter',
+        lineIndex: chapter.lineIndex,
+        top: topOf(chapter.lineIndex),
+        label: `章节：${chapter.title}`,
+      })
+    }
 
     // One dot per run of consecutive favorited paragraphs.
     const sorted = [...starredLines].sort((a, b) => a - b)
@@ -503,7 +474,7 @@ function BookText({
       }
       i += 1
       const count = end - start + 1
-      result.push({
+      markers.push({
         key: `paragraph-${start}`,
         kind: 'paragraph',
         lineIndex: start,
@@ -514,18 +485,24 @@ function BookText({
             : excerpt(lines[start]),
       })
     }
-    return result
-  }, [favoriteChapters, lineTops, lines, starredLines, topOf])
+  }
 
   return (
     <div ref={contentRef} className="book-reader-content relative min-h-0 flex-1">
       <div ref={scrollerRef} className="relative h-full overflow-y-auto">
         <div ref={textRef} className="py-16">
-          <BookLines
-            imageBaseUrl={imageBaseUrl}
-            lines={lines}
-            starredLines={starredLines}
-          />
+          {/* Every line of the book, rendered at once. The compiler keeps
+              this list across selection changes; BookLine's memo re-renders
+              only the lines a favorite toggles. */}
+          {lines.map((line, index) => (
+            <BookLine
+              key={index}
+              imageBaseUrl={imageBaseUrl}
+              line={line}
+              index={index}
+              starred={starredLines.has(index)}
+            />
+          ))}
         </div>
       </div>
       <FavoriteRail

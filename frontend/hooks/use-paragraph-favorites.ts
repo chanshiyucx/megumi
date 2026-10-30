@@ -65,6 +65,10 @@ export function useParagraphFavorites(
   }, [ensureLoaded])
 
   const bookTitle = book?.title
+  // These three stay explicit memos even with the compiler: the index is the
+  // match cache's key and tells the healing below which text it last ran
+  // against, and all three are that effect's dependencies, so each must
+  // change only with its inputs.
   const index = useMemo(
     () => (content ? indexBook(content.lines, content.chapters) : null),
     [content],
@@ -86,22 +90,17 @@ export function useParagraphFavorites(
   }, [favorites, index])
 
   // line index -> favorite ids underlined there
-  const favoritesByLine = useMemo(() => {
-    const result = new Map<number, string[]>()
-    for (const [id, match] of matches) {
-      if (!match) continue
-      const ids = result.get(match.lineIndex)
-      if (ids) ids.push(id)
-      else result.set(match.lineIndex, [id])
-    }
-    return result
-  }, [matches])
+  const favoritesByLine = new Map<number, string[]>()
+  for (const [id, match] of matches) {
+    if (!match) continue
+    const ids = favoritesByLine.get(match.lineIndex)
+    if (ids) ids.push(id)
+    else favoritesByLine.set(match.lineIndex, [id])
+  }
 
-  const starredLines = useMemo(
-    () =>
-      favoritesByLine.size ? new Set(favoritesByLine.keys()) : EMPTY_LINES,
-    [favoritesByLine],
-  )
+  const starredLines = favoritesByLine.size
+    ? new Set(favoritesByLine.keys())
+    : EMPTY_LINES
 
   useEffect(() => {
     if (!index || status !== 'ready') return

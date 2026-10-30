@@ -39,6 +39,8 @@ interface StripPageProps {
   start: number
   width: number
   height: number
+  // In view: its image loads ahead of the pages preloaded around it.
+  inView: boolean
   revealed: boolean
   onHover?: (index: number | null) => void
   onTags: (id: string, imageKey: string, tags: FileTags) => Promise<void>
@@ -51,6 +53,7 @@ const StripPage = memo(function StripPage({
   start,
   width,
   height,
+  inView,
   revealed,
   onHover,
   onTags,
@@ -75,6 +78,7 @@ const StripPage = memo(function StripPage({
         comicId={comicId}
         image={image}
         className="h-full w-full"
+        fetchPriority={inView ? 'high' : 'low'}
         revealed={revealed}
         onTags={onTags}
       />
@@ -191,6 +195,10 @@ export const ComicStrip = forwardRef<ComicStripHandle, ComicStripProps>(
                     start={page.start}
                     width={page.width}
                     height={page.height}
+                    inView={
+                      page.index >= visibleRange.inViewStart &&
+                      page.index <= visibleRange.inViewEnd
+                    }
                     revealed={marking}
                     onHover={onHover}
                     onTags={onTags}

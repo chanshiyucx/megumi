@@ -23,6 +23,7 @@ interface ImageProps {
   isSelected?: boolean
   className?: string
   loading?: 'eager' | 'lazy'
+  fetchPriority?: 'high' | 'low' | 'auto'
   // Shows the tag controls: the reader's mark mode (full-size pages).
   revealed?: boolean
 }
@@ -70,11 +71,13 @@ export function GridImage({
 interface ProgressiveImageProps {
   image: Image
   loading?: 'eager' | 'lazy'
+  fetchPriority?: 'high' | 'low' | 'auto'
 }
 
 function ProgressiveImage({
   image,
   loading = 'eager',
+  fetchPriority,
 }: ProgressiveImageProps) {
   const [loadedUrl, setLoadedUrl] = useState('')
   const isFullLoaded = loadedUrl === image.url
@@ -95,6 +98,7 @@ function ProgressiveImage({
         alt={image.filename}
         decoding="async"
         loading={loading}
+        fetchPriority={fetchPriority}
         onLoad={() => {
           setLoadedUrl(image.url)
         }}
@@ -148,6 +152,7 @@ export function ScrollImage({
   revealed,
   className = 'h-full',
   loading = 'eager',
+  fetchPriority,
 }: ImageProps) {
   const { hoverProps, controls } = useImageTags(
     comicId,
@@ -164,7 +169,11 @@ export function ScrollImage({
       }}
       {...hoverProps}
     >
-      <ProgressiveImage image={image} loading={loading} />
+      <ProgressiveImage
+        image={image}
+        loading={loading}
+        fetchPriority={fetchPriority}
+      />
       <TagOverlay layout="bar" {...controls} />
     </figure>
   )

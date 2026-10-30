@@ -36,6 +36,16 @@ interface ComicStripLayout {
 interface VisibleRange {
   start: number
   end: number
+  // The pages in view when the range was taken: their images load first.
+  inViewStart: number
+  inViewEnd: number
+}
+
+const EMPTY_RANGE: VisibleRange = {
+  start: 0,
+  end: 0,
+  inViewStart: 0,
+  inViewEnd: 0,
 }
 
 interface UseComicStripOptions {
@@ -201,16 +211,16 @@ function getVisibleRange(
   // first intersecting page cannot come after the last intersecting page.
   let start = findFirstPageEndingAfter(layout.pages, visibleStart)
   let end = findLastPageStartingBefore(layout.pages, visibleEnd)
+  const inViewStart = findFirstPageEndingAfter(layout.pages, scrollOffset)
+  const inViewEnd = findLastPageStartingBefore(
+    layout.pages,
+    scrollOffset + layout.viewportSize,
+  )
 
   if (end - start + 1 > maxRenderedPages) {
     // Over the cap: keep every page in view, then split the slots left over
     // the way the overscan is split, more in the reading direction; slots one
     // side cannot use (start / end of the comic) go to the other.
-    const inViewStart = findFirstPageEndingAfter(layout.pages, scrollOffset)
-    const inViewEnd = findLastPageStartingBefore(
-      layout.pages,
-      scrollOffset + layout.viewportSize,
-    )
     const spare = Math.max(0, maxRenderedPages - (inViewEnd - inViewStart + 1))
     const behindShare = Math.floor(
       (spare * BEHIND_VIEWPORTS) / (AHEAD_VIEWPORTS + BEHIND_VIEWPORTS),
@@ -227,7 +237,7 @@ function getVisibleRange(
     end = inViewEnd + keepAfter
   }
 
-  return { start, end }
+  return { start, end, inViewStart, inViewEnd }
 }
 
 function shouldUpdateVisibleRange(
@@ -351,7 +361,7 @@ export function useComicStrip({
   const stepTargetRef = useRef<number | null>(null)
   const stepTimerRef = useRef<number | null>(null)
   const currentIndexRef = useRef(initialIndex)
-  const visibleRangeRef = useRef<VisibleRange>({ start: 0, end: 0 })
+  const visibleRangeRef = useRef<VisibleRange>(EMPTY_RANGE)
   const layoutRef = useRef<ComicStripLayout | null>(null)
   // The layout the current scroll offset was set in, for anchoring it when
   // the layout changes.
@@ -363,10 +373,7 @@ export function useComicStrip({
     width: 0,
     height: 0,
   })
-  const [visibleRange, setVisibleRange] = useState<VisibleRange>({
-    start: 0,
-    end: 0,
-  })
+  const [visibleRange, setVisibleRange] = useState<VisibleRange>(EMPTY_RANGE)
 
   const layout = useMemo(
     () =>
@@ -528,7 +535,7 @@ export function useComicStrip({
   useLayoutEffect(() => {
     if (!images.length) {
       currentIndexRef.current = 0
-      visibleRangeRef.current = { start: 0, end: 0 }
+      visibleRangeRef.current = EMPTY_RANGE
       pendingJumpRef.current = 0
       scrolledLayoutRef.current = null
       return
@@ -578,7 +585,10 @@ export function useComicStrip({
     )
     visibleRangeRef.current = nextRange
     setVisibleRange((prev) =>
-      prev.start === nextRange.start && prev.end === nextRange.end
+      prev.start === nextRange.start &&
+      prev.end === nextRange.end &&
+      prev.inViewStart === nextRange.inViewStart &&
+      prev.inViewEnd === nextRange.inViewEnd
         ? prev
         : nextRange,
     )

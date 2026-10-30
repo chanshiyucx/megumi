@@ -1,4 +1,5 @@
 import {
+  useCallback,
   useEffect,
   useEffectEvent,
   useLayoutEffect,
@@ -177,9 +178,11 @@ export function useComicReadingSession({
     dismissRemote('comics', comicId)
   }
 
-  const setHoveredIndex = (index: number | null) => {
+  // Stable: every strip page takes it, and a new function each render would
+  // re-render all of them (memo) on every page turn.
+  const setHoveredIndex = useCallback((index: number | null) => {
     hoveredIndexRef.current = index
-  }
+  }, [])
 
   const getTagTargetImage = () =>
     resolveTagTargetImage(

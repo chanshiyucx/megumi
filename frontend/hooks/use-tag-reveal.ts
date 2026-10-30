@@ -1,37 +1,64 @@
-import { useRef, useState } from 'react'
+import { useRef, useState, type PointerEvent } from 'react'
 import { useClickOutside } from '@/hooks/use-click-outside'
-import { usePressGestures } from '@/hooks/use-press-gestures'
+import { usePressGestures, type Press } from '@/hooks/use-press-gestures'
 
 /**
- * Tap-to-reveal interaction shared by every taggable image (grid, scroll strip,
- * preview): a single tap toggles `open` — which shows the tag controls and
- * title — while a double tap runs `onDoubleTap`. When `enabled` is false the tap
- * is ignored (the surface handles plain clicks itself) and `open` stays false.
- *
- * Attach the returned `ref` to the image element; a press anywhere outside it
- * (empty space or another image) collapses the reveal.
+ * Whether a mouse (or pen) is over the element. Touch never hovers: a finger
+ * reveals tags its own way (long press, or a tap zone on the reader).
  */
-export function useTagReveal(
-  onDoubleTap: () => void,
-  enabled = true,
-  onTap?: () => void,
-) {
+export function useMouseHover() {
+  const [hovered, setHovered] = useState(false)
+  const hoverProps = {
+    onPointerEnter: (e: PointerEvent) => {
+      if (e.pointerType !== 'touch') setHovered(true)
+    },
+    onPointerLeave: (e: PointerEvent) => {
+      if (e.pointerType !== 'touch') setHovered(false)
+    },
+  }
+  return { hovered, hoverProps }
+}
+
+interface TagRevealOptions {
+  onTap?: (press: Press) => void
+  onDoubleTap?: (press: Press) => void
+  // Reveal the tag controls: on hover with a mouse, or by a long press with a
+  // finger (which a press outside, or another long press, collapses). A tap
+  // is left to the surface either way.
+  reveal?: boolean
+}
+
+/**
+ * Tag reveal for a thumbnail: returns `open` for its tag controls and the
+ * `gestures` to spread on it, attached through `ref`.
+ */
+export function useTagReveal({
+  onTap,
+  onDoubleTap,
+  reveal = false,
+}: TagRevealOptions) {
   const ref = useRef<HTMLElement>(null)
-  const [open, setOpen] = useState(false)
+  const [pressed, setPressed] = useState(false)
+  const { hovered, hoverProps } = useMouseHover()
   const close = () => {
-    setOpen(false)
+    setPressed(false)
   }
 
-  useClickOutside(ref, close, open)
+  useClickOutside(ref, close, pressed)
 
-  const gestures = usePressGestures({
-    onTap: enabled
+  const press = usePressGestures({
+    onTap,
+    onDoubleTap,
+    onLongPress: reveal
       ? () => {
-          setOpen((v) => !v)
-          onTap?.()
+          setPressed((v) => !v)
         }
       : undefined,
-    onDoubleTap,
   })
-  return { ref, open, gestures, close }
+  return {
+    ref,
+    open: reveal && (pressed || hovered),
+    gestures: { ...press, ...(reveal ? hoverProps : {}) },
+    close,
+  }
 }

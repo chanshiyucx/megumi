@@ -2,6 +2,11 @@ import { useEffect, useEffectEvent, useRef, useState } from 'react'
 import { GridItem } from '@/components/ui/grid-item'
 import { TagOverlay } from '@/components/ui/tag-overlay'
 import { useImageTags } from '@/hooks/use-image-tags'
+import {
+  pressZone,
+  usePressGestures,
+  type Press,
+} from '@/hooks/use-press-gestures'
 import { SHORTCUTS } from '@/lib/shortcuts'
 import { cn } from '@/lib/style'
 import type { FileTags, Image } from '@/types/library'
@@ -18,11 +23,13 @@ interface ImageProps {
   isSelected?: boolean
   className?: string
   loading?: 'eager' | 'lazy'
+  // Shows the tag controls: the reader's mark mode (full-size pages).
+  revealed?: boolean
 }
 
 interface GridImageProps extends ImageProps {
-  // Tap reveals the tag buttons and filename instead of selecting (page grid).
-  tagOnTap?: boolean
+  // Hover / long press reveals the tag buttons and filename (page grid).
+  revealTags?: boolean
 }
 
 export function GridImage({
@@ -33,7 +40,7 @@ export function GridImage({
   isSelected,
   className,
   onTags,
-  tagOnTap,
+  revealTags,
   loading,
 }: GridImageProps) {
   return (
@@ -44,7 +51,7 @@ export function GridImage({
       starred={image.starred}
       deleted={image.deleted}
       isSelected={isSelected}
-      tagOnTap={tagOnTap}
+      revealTags={revealTags}
       loading={loading}
       onClick={() => onClick?.(image.index)}
       onDoubleClick={() => onDoubleClick?.(image.index)}
@@ -101,23 +108,18 @@ function ProgressiveImage({
   )
 }
 
-function SingleImage({
-  comicId,
-  image,
-  onTags,
-  onDoubleClick,
-}: ImageProps) {
-  const { ref, gestures, controls } = useImageTags(comicId, image, onTags, () =>
-    onDoubleClick?.(image.index),
+function SingleImage({ comicId, image, onTags, revealed }: ImageProps) {
+  const { hoverProps, controls } = useImageTags(
+    comicId,
+    image,
+    onTags,
+    revealed,
   )
 
   return (
-    <figure
-      ref={ref}
-      className="flex h-full w-full touch-manipulation items-center justify-center"
-      {...gestures}
-    >
+    <figure className="flex h-full w-full items-center justify-center">
       <div
+        {...hoverProps}
         className="group relative max-h-full max-w-full"
         style={{
           aspectRatio: `${image.width} / ${image.height}`,
@@ -143,22 +145,24 @@ export function ScrollImage({
   comicId,
   image,
   onTags,
-  onDoubleClick,
+  revealed,
   className = 'h-full',
   loading = 'eager',
 }: ImageProps) {
-  const { ref, gestures, controls } = useImageTags(comicId, image, onTags, () =>
-    onDoubleClick?.(image.index),
+  const { hoverProps, controls } = useImageTags(
+    comicId,
+    image,
+    onTags,
+    revealed,
   )
 
   return (
     <figure
-      ref={ref}
-      className={cn('group relative shrink-0 touch-manipulation', className)}
+      className={cn('group relative shrink-0', className)}
       style={{
         aspectRatio: `${image.width} / ${image.height}`,
       }}
-      {...gestures}
+      {...hoverProps}
     >
       <ProgressiveImage image={image} loading={loading} />
       <TagOverlay layout="bar" {...controls} />
@@ -181,14 +185,44 @@ function ImagePreview({
   onDoubleClick,
 }: ImagePreviewProps) {
   const currentImage = images[index]
+  const containerRef = useRef<HTMLDivElement>(null)
   const touchStartRef = useRef<{ x: number; y: number } | null>(null)
+  // The tag bar a finger opened; every page flip closes it.
+  const [revealed, setRevealed] = useState(false)
 
   const goPrev = () => {
-    if (index > 0) onIndexChange(index - 1)
+    if (index <= 0) return
+    setRevealed(false)
+    onIndexChange(index - 1)
   }
   const goNext = () => {
-    if (index < images.length - 1) onIndexChange(index + 1)
+    if (index >= images.length - 1) return
+    setRevealed(false)
+    onIndexChange(index + 1)
   }
+
+  // A finger taps the left / right third to flip pages at once and the middle
+  // to show the tag bar; a double tap there closes the preview. A mouse
+  // flips with the arrow keys, shows the bar on hover and double-clicks to
+  // close.
+  const zoneOf = (press: Press) => {
+    const container = containerRef.current
+    return container
+      ? pressZone(container.getBoundingClientRect(), press, 'horizontal')
+      : 0
+  }
+  const gestures = usePressGestures({
+    canDoubleTap: (press) =>
+      press.pointerType !== 'touch' || zoneOf(press) === 0,
+    onTap: (press) => {
+      if (press.pointerType !== 'touch') return
+      const zone = zoneOf(press)
+      if (zone < 0) goPrev()
+      else if (zone > 0) goNext()
+      else setRevealed((v) => !v)
+    },
+    onDoubleTap: () => onDoubleClick?.(index),
+  })
 
   const handleKeyDown = useEffectEvent((e: KeyboardEvent) => {
     if (e.metaKey || e.ctrlKey || e.altKey) return
@@ -214,11 +248,16 @@ function ImagePreview({
     }
   }, [])
 
-  // Warm the HTTP cache for the adjacent pages so left/right navigation
-  // paints the next image instantly instead of fetching on keypress.
+  // Warm the HTTP cache for the pages around this one so left/right
+  // navigation paints instantly instead of fetching on keypress; reading
+  // goes forward, so two ahead and one back.
   useEffect(() => {
     if (index < 0) return
-    for (const neighbor of [images[index + 1], images[index - 1]]) {
+    for (const neighbor of [
+      images[index + 1],
+      images[index + 2],
+      images[index - 1],
+    ]) {
       if (!neighbor) continue
       const img = new window.Image()
       img.src = neighbor.url
@@ -249,17 +288,19 @@ function ImagePreview({
 
   return (
     <div
-      className="relative flex h-full w-full flex-col"
+      ref={containerRef}
+      className="relative flex h-full w-full touch-manipulation flex-col"
       onTouchStart={handleTouchStart}
       onTouchEnd={handleTouchEnd}
+      {...gestures}
     >
       <SingleImage
-        // Re-key per page so the tag bar resets to closed when flipping pages.
+        // Re-key per page so a hover from the last page does not carry over.
         key={currentImage.filename}
         comicId={comicId}
         image={currentImage}
         onTags={onTags}
-        onDoubleClick={onDoubleClick}
+        revealed={revealed}
       />
     </div>
   )

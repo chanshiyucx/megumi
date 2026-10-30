@@ -1,9 +1,14 @@
-import { forwardRef, memo, useImperativeHandle } from 'react'
+import { forwardRef, memo, useImperativeHandle, useState } from 'react'
 import { ScrollImage } from '@/components/ui/image-view'
 import {
   useComicStrip,
   type ComicStripOrientation,
 } from '@/hooks/use-comic-strip'
+import {
+  pressZone,
+  usePressGestures,
+  type Press,
+} from '@/hooks/use-press-gestures'
 import { cn } from '@/lib/style'
 import type { FileTags, Image } from '@/types/library'
 
@@ -32,8 +37,8 @@ interface StripPageProps {
   start: number
   width: number
   height: number
+  revealed: boolean
   onHover?: (index: number | null) => void
-  onDoubleClick?: (index: number) => void
   onTags: (id: string, imageKey: string, tags: FileTags) => Promise<void>
 }
 
@@ -44,12 +49,13 @@ const StripPage = memo(function StripPage({
   start,
   width,
   height,
+  revealed,
   onHover,
-  onDoubleClick,
   onTags,
 }: StripPageProps) {
   return (
     <div
+      data-page-index={image.index}
       className={cn(
         'absolute',
         orientation === 'horizontal' ? 'top-0 h-full' : 'left-0 w-full',
@@ -67,7 +73,7 @@ const StripPage = memo(function StripPage({
         comicId={comicId}
         image={image}
         className="h-full w-full"
-        onDoubleClick={onDoubleClick}
+        revealed={revealed}
         onTags={onTags}
       />
     </div>
@@ -89,27 +95,62 @@ export const ComicStrip = forwardRef<ComicStripHandle, ComicStripProps>(
     },
     ref,
   ) {
+    // Mark mode: every page in view shows its tag controls, for a finger,
+    // which cannot hover. Moving to another page leaves it.
+    const [marking, setMarking] = useState(false)
     const { containerRef, jumpTo, step, layout, onScroll, visibleRange } =
       useComicStrip({
         images,
         initialIndex,
         orientation,
-        onCurrentIndexChange,
+        onCurrentIndexChange: (index) => {
+          setMarking(false)
+          onCurrentIndexChange?.(index)
+        },
       })
 
     useImperativeHandle(ref, () => ({ jumpTo, step }), [jumpTo, step])
+
+    // A finger taps the first / last third of the strip (along its reading
+    // axis) to step a page at once, and the middle for mark mode; a double
+    // tap there opens the page in the preview. A mouse shows a page's tags on
+    // hover, steps with the arrow keys and double-clicks to preview.
+    const zoneOf = (press: Press) => {
+      const container = containerRef.current
+      return container
+        ? pressZone(container.getBoundingClientRect(), press, orientation)
+        : 0
+    }
+    const gestures = usePressGestures({
+      canDoubleTap: (press) =>
+        press.pointerType !== 'touch' || zoneOf(press) === 0,
+      onTap: (press) => {
+        if (press.pointerType !== 'touch') return
+        const zone = zoneOf(press)
+        if (zone === 0) setMarking((v) => !v)
+        else step(zone)
+      },
+      onDoubleTap: (press) => {
+        const page =
+          press.target instanceof Element
+            ? press.target.closest<HTMLElement>('[data-page-index]')
+            : null
+        if (page) onDoubleClick?.(Number(page.dataset.pageIndex))
+      },
+    })
 
     return (
       <div
         ref={containerRef}
         className={cn(
-          'scrollbar-hide min-h-0 min-w-0',
+          'scrollbar-hide min-h-0 min-w-0 touch-manipulation',
           orientation === 'horizontal'
             ? 'overflow-x-auto overflow-y-hidden'
             : 'overflow-x-hidden overflow-y-auto',
           className,
         )}
         onScroll={onScroll}
+        {...gestures}
       >
         <div
           className="relative"
@@ -137,8 +178,8 @@ export const ComicStrip = forwardRef<ComicStripHandle, ComicStripProps>(
                     start={page.start}
                     width={page.width}
                     height={page.height}
+                    revealed={marking}
                     onHover={onHover}
-                    onDoubleClick={onDoubleClick}
                     onTags={onTags}
                   />
                 )

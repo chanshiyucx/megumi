@@ -1,7 +1,11 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { Image } from '@/types/library'
 
-const DEFAULT_OVERSCAN_VIEWPORTS = 2
+// Pages kept mounted (and so loaded) around the viewport, in viewports: more
+// in the reading direction, so the pages coming up get the bandwidth rather
+// than the ones already read.
+const AHEAD_VIEWPORTS = 3
+const BEHIND_VIEWPORTS = 1
 const DEFAULT_MAX_RENDERED_PAGES = 16
 // A page edge this close to the viewport edge counts as aligned with it.
 const EDGE_SLOP = 2
@@ -39,7 +43,6 @@ interface UseComicStripOptions {
   initialIndex?: number
   onCurrentIndexChange?: (index: number) => void
   orientation?: ComicStripOrientation
-  overscanViewports?: number
   maxRenderedPages?: number
 }
 
@@ -180,14 +183,18 @@ function getComicStripCurrentIndex(
 function getVisibleRange(
   layout: ComicStripLayout,
   scrollOffset: number,
-  overscanViewports: number,
+  direction: 1 | -1,
   maxRenderedPages: number,
 ): VisibleRange {
-  const overscanPx = layout.viewportSize * overscanViewports
-  const visibleStart = Math.max(0, scrollOffset - overscanPx)
+  const ahead = layout.viewportSize * AHEAD_VIEWPORTS
+  const behind = layout.viewportSize * BEHIND_VIEWPORTS
+  const visibleStart = Math.max(
+    0,
+    scrollOffset - (direction > 0 ? behind : ahead),
+  )
   const visibleEnd = Math.min(
     layout.totalSize,
-    scrollOffset + layout.viewportSize + overscanPx,
+    scrollOffset + layout.viewportSize + (direction > 0 ? ahead : behind),
   )
 
   // createLayout produces contiguous pages and a positive viewport, so the
@@ -196,14 +203,28 @@ function getVisibleRange(
   let end = findLastPageStartingBefore(layout.pages, visibleEnd)
 
   if (end - start + 1 > maxRenderedPages) {
-    const center = Math.floor((start + end) / 2)
-    const halfWindow = Math.floor(maxRenderedPages / 2)
-    start = clamp(
-      center - halfWindow,
-      0,
-      Math.max(0, layout.pages.length - maxRenderedPages),
+    // Over the cap: keep every page in view, then split the slots left over
+    // the way the overscan is split, more in the reading direction; slots one
+    // side cannot use (start / end of the comic) go to the other.
+    const inViewStart = findFirstPageEndingAfter(layout.pages, scrollOffset)
+    const inViewEnd = findLastPageStartingBefore(
+      layout.pages,
+      scrollOffset + layout.viewportSize,
     )
-    end = Math.min(layout.pages.length - 1, start + maxRenderedPages - 1)
+    const spare = Math.max(0, maxRenderedPages - (inViewEnd - inViewStart + 1))
+    const behindShare = Math.floor(
+      (spare * BEHIND_VIEWPORTS) / (AHEAD_VIEWPORTS + BEHIND_VIEWPORTS),
+    )
+    const before = inViewStart - start
+    const after = end - inViewEnd
+    let keepBefore = Math.min(
+      before,
+      direction > 0 ? behindShare : spare - behindShare,
+    )
+    const keepAfter = Math.min(after, spare - keepBefore)
+    keepBefore = Math.min(before, spare - keepAfter)
+    start = inViewStart - keepBefore
+    end = inViewEnd + keepAfter
   }
 
   return { start, end }
@@ -297,13 +318,14 @@ export function useComicStrip({
   initialIndex = 0,
   onCurrentIndexChange,
   orientation = 'horizontal',
-  overscanViewports = DEFAULT_OVERSCAN_VIEWPORTS,
   maxRenderedPages = DEFAULT_MAX_RENDERED_PAGES,
 }: UseComicStripOptions) {
   const containerRef = useRef<HTMLDivElement>(null)
   const pendingJumpRef = useRef<number | null>(initialIndex)
   const frameRef = useRef<number | null>(null)
   const pendingScrollOffsetRef = useRef(0)
+  // Which way the reader last scrolled; reading starts forward.
+  const directionRef = useRef<1 | -1>(1)
   // Destination of an in-flight smooth step, so quick repeated steps chain
   // from where the last one is heading rather than from mid-animation.
   const stepTargetRef = useRef<number | null>(null)
@@ -363,7 +385,7 @@ export function useComicStrip({
     const nextRange = getVisibleRange(
       layout,
       scrollOffset,
-      overscanViewports,
+      directionRef.current,
       maxRenderedPages,
     )
     if (shouldUpdateVisibleRange(visibleRangeRef.current, nextRange)) {
@@ -376,6 +398,10 @@ export function useComicStrip({
     const container = containerRef.current
     if (!container) return
     const scrollOffset = getScrollOffset(container, orientation)
+    if (scrollOffset !== pendingScrollOffsetRef.current) {
+      directionRef.current =
+        scrollOffset > pendingScrollOffsetRef.current ? 1 : -1
+    }
     pendingScrollOffsetRef.current = scrollOffset
     if (
       stepTargetRef.current !== null &&
@@ -406,6 +432,9 @@ export function useComicStrip({
     const targetOffset = getJumpOffset(layout, nextIndex)
 
     pendingJumpRef.current = null
+    // Reading goes on forward from wherever a jump lands, even a jump back.
+    pendingScrollOffsetRef.current = targetOffset
+    directionRef.current = 1
     if (orientation === 'horizontal') {
       container.scrollLeft = targetOffset
     } else {
@@ -415,7 +444,7 @@ export function useComicStrip({
     const nextRange = getVisibleRange(
       layout,
       targetOffset,
-      overscanViewports,
+      directionRef.current,
       maxRenderedPages,
     )
     visibleRangeRef.current = nextRange
@@ -492,6 +521,9 @@ export function useComicStrip({
     const targetOffset = getJumpOffset(currentLayout, nextIndex)
 
     pendingJumpRef.current = null
+    // Reading goes on forward from wherever a jump lands, even a jump back.
+    pendingScrollOffsetRef.current = targetOffset
+    directionRef.current = 1
     if (orientation === 'horizontal') {
       container.scrollLeft = targetOffset
     } else {
@@ -501,7 +533,7 @@ export function useComicStrip({
     const nextRange = getVisibleRange(
       currentLayout,
       targetOffset,
-      overscanViewports,
+      directionRef.current,
       maxRenderedPages,
     )
     visibleRangeRef.current = nextRange
@@ -515,7 +547,6 @@ export function useComicStrip({
     layoutRestoreKey,
     maxRenderedPages,
     orientation,
-    overscanViewports,
   ])
 
   useEffect(

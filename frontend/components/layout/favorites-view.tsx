@@ -450,7 +450,7 @@ export function FavoritesView() {
                         comicId={comic.id}
                         image={image}
                         isSelected={nav.imageKey === image.path}
-                        tagOnTap
+                        revealTags
                         onClick={() => {
                           selectImage(comic, image)
                         }}

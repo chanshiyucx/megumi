@@ -18,10 +18,11 @@ interface GridItemProps {
   isSelected?: boolean
   progress?: ComicProgress
   duration?: string
-  // When set, a tap reveals both tag buttons and the title (centred at the
-  // bottom) and runs onClick; tapping again hides them. Active tags stay shown
-  // either way. Used for page thumbnails; covers/TOC select on tap.
-  tagOnTap?: boolean
+  // When set, both tag buttons and the title (centred at the bottom) show on
+  // mouse hover, or after a long press with a finger; a tap still runs
+  // onClick. Active tags stay shown either way. Used for page thumbnails;
+  // covers / TOC only show active tags.
+  revealTags?: boolean
   loading?: 'eager' | 'lazy'
   onClick: () => void
   onDoubleClick?: () => void
@@ -39,7 +40,7 @@ export function GridItem({
   isSelected,
   progress,
   duration,
-  tagOnTap,
+  revealTags,
   loading,
   onClick,
   onDoubleClick,
@@ -47,22 +48,24 @@ export function GridItem({
   onStar,
   onDelete,
 }: GridItemProps) {
-  const { ref, open, gestures, close } = useTagReveal(
-    () => onDoubleClick?.(),
-    tagOnTap,
-    onClick,
-  )
+  const { ref, open, gestures, close } = useTagReveal({
+    onTap: revealTags ? onClick : undefined,
+    onDoubleTap: () => onDoubleClick?.(),
+    reveal: revealTags,
+  })
 
   return (
     <figure
       ref={ref}
       className={cn(
         'group relative flex aspect-2/3 w-full shrink-0 cursor-pointer touch-manipulation flex-col overflow-hidden transition-all',
+        // A long press reveals the tags rather than the system image menu.
+        revealTags && 'select-none [-webkit-touch-callout:none]',
         isSelected &&
           'after:inset-ring-love after:pointer-events-none after:absolute after:inset-0 after:inset-ring-3',
         className,
       )}
-      onClick={tagOnTap ? undefined : onClick}
+      onClick={revealTags ? undefined : onClick}
       onContextMenu={onContextMenu}
       {...gestures}
     >

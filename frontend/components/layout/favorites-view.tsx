@@ -1,5 +1,5 @@
 import { Book as BookIcon, Star } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { VirtuosoGrid } from 'react-virtuoso'
 import { Button } from '@/components/ui/button'
 import { COVER_GRID_CLASS } from '@/components/ui/grid-item'
@@ -264,11 +264,15 @@ export function FavoritesView() {
 
   const retainedKeys =
     retained.category === category ? retained.keys : NO_RETAINED
-  const favorites = collectFavorites(src, retainedKeys)
-  const paragraphGroups = favoriteParagraphGroups(
-    src,
-    paragraphs,
-    removedParagraphs,
+  // Explicit memos: the compiler leaves these two calls uncached, so every
+  // selection change would collect all favorites again.
+  const favorites = useMemo(
+    () => collectFavorites(src, retainedKeys),
+    [src, retainedKeys],
+  )
+  const paragraphGroups = useMemo(
+    () => favoriteParagraphGroups(src, paragraphs, removedParagraphs),
+    [paragraphs, removedParagraphs, src],
   )
   const counts = countFavorites(
     collectFavorites(src, NO_RETAINED),

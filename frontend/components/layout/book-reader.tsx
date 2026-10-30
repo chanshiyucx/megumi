@@ -6,6 +6,7 @@ import {
   useEffectEvent,
   useImperativeHandle,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from 'react'
@@ -235,7 +236,12 @@ function FavoriteRail({
   // The rail alone follows the position, so scrolling re-renders only it.
   const currentLine = useProgressStore((s) => s.books[bookId]?.current ?? 0)
   const hasMarkers = markers.length > 0
-  const groups = groupMarkers(markers, railHeight)
+  // An explicit memo: the compiler leaves this call uncached, and the rail
+  // re-renders on every progress update while scrolling.
+  const groups = useMemo(
+    () => groupMarkers(markers, railHeight),
+    [markers, railHeight],
+  )
 
   useLayoutEffect(() => {
     const rail = railRef.current

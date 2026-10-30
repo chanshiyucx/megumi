@@ -13,6 +13,9 @@ import type { FileTags, Image } from '@/types/library'
 
 // Min horizontal travel (px) for a touch drag to count as a prev/next swipe.
 const SWIPE_THRESHOLD = 50
+// A page image that fails to load (a dropped connection) is requested again
+// after each of these delays; the thumbnail stays up meanwhile.
+const RETRY_DELAYS_MS = [1000, 3000]
 
 interface ImageProps {
   comicId: string
@@ -81,6 +84,20 @@ function ProgressiveImage({
 }: ProgressiveImageProps) {
   const [loadedUrl, setLoadedUrl] = useState('')
   const isFullLoaded = loadedUrl === image.url
+  const [attempt, setAttempt] = useState({ url: image.url, retries: 0 })
+  const retries = attempt.url === image.url ? attempt.retries : 0
+  const retryTimerRef = useRef<number | null>(null)
+
+  // A retry belongs to one URL: a refresh that re-versions the page drops it.
+  useEffect(
+    () => () => {
+      if (retryTimerRef.current !== null) {
+        clearTimeout(retryTimerRef.current)
+        retryTimerRef.current = null
+      }
+    },
+    [image.url],
+  )
 
   return (
     <>
@@ -93,7 +110,8 @@ function ProgressiveImage({
         style={{ backgroundImage: `url("${image.thumbnail}")` }}
       />
       <img
-        key={image.url}
+        // A new element requests the image again; the same one would not.
+        key={`${image.url}#${retries}`}
         src={image.url}
         alt={image.filename}
         decoding="async"
@@ -101,6 +119,14 @@ function ProgressiveImage({
         fetchPriority={fetchPriority}
         onLoad={() => {
           setLoadedUrl(image.url)
+        }}
+        onError={() => {
+          if (retries >= RETRY_DELAYS_MS.length) return
+          const url = image.url
+          retryTimerRef.current = window.setTimeout(() => {
+            retryTimerRef.current = null
+            setAttempt({ url, retries: retries + 1 })
+          }, RETRY_DELAYS_MS[retries])
         }}
         className={cn(
           'absolute inset-0 block h-full w-full object-contain transition-opacity duration-100 [-webkit-touch-callout:default]',

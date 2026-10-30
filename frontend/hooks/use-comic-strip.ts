@@ -256,8 +256,10 @@ function shouldUpdateVisibleRange(
  * fully into view (its end on that edge), backward does the same for the near
  * edge; a page wider than the viewport is walked through a viewport at a time.
  *
- * Vertical: pages are usually taller than the viewport, so a step moves to the
- * next / previous page and puts its top at the top of the viewport.
+ * Vertical: a step moves to the next / previous page and puts its top at the
+ * top of the viewport. A page running past the viewport (a wide strip makes
+ * pages taller than it) is walked through a viewport at a time first, so its
+ * lower part is not skipped.
  */
 function getStepOffset(
   layout: ComicStripLayout,
@@ -270,6 +272,21 @@ function getStepOffset(
   let target: number
 
   if (layout.orientation === 'vertical') {
+    const current = pages[findFirstPageEndingAfter(pages, offset)]
+    if (direction > 0 && current.end > viewportEnd + EDGE_SLOP) {
+      return clamp(
+        Math.min(viewportEnd, current.end - viewportSize),
+        0,
+        maxOffset,
+      )
+    }
+    if (direction < 0 && current.start < offset - EDGE_SLOP) {
+      return clamp(
+        Math.max(offset - viewportSize, current.start),
+        0,
+        maxOffset,
+      )
+    }
     const page =
       direction > 0
         ? pages.find((p) => p.start > offset + EDGE_SLOP)

@@ -10,6 +10,7 @@ import {
 } from 'react'
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 import { Button } from '@/components/ui/button'
+import { RemoteProgressPrompt } from '@/components/ui/remote-progress-prompt'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Spinner } from '@/components/ui/spinner'
 import { useBookReadingSession } from '@/hooks/use-book-reading-session'
@@ -595,6 +596,9 @@ export function BookReader({
     toggleBookDeleted,
     toggleBookStarred,
     toggleChapterStarred,
+    remoteProgress,
+    jumpToRemote,
+    keepLocalPosition,
     starredLines,
     toggleLines,
   } = useBookReadingSession({ bookId, surface, jumpRequest })
@@ -715,6 +719,19 @@ export function BookReader({
         favoriteChapters={favoriteChapters}
         onJump={jumpTo}
       />
+
+      {remoteProgress && (
+        <RemoteProgressPrompt
+          label={[
+            remoteProgress.currentChapterTitle,
+            `${Math.round(remoteProgress.percent)}%`,
+          ]
+            .filter(Boolean)
+            .join(' · ')}
+          onJump={jumpToRemote}
+          onDismiss={keepLocalPosition}
+        />
+      )}
     </div>
   )
 }

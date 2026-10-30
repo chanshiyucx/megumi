@@ -4,6 +4,7 @@ import { VirtuosoGrid } from 'react-virtuoso'
 import { Button } from '@/components/ui/button'
 import { ComicStrip, type ComicStripHandle } from '@/components/ui/comic-strip'
 import { GridImage, ImagePreviewOverlay } from '@/components/ui/image-view'
+import { RemoteProgressPrompt } from '@/components/ui/remote-progress-prompt'
 import { useComicReadingSession } from '@/hooks/use-comic-reading-session'
 import { cn } from '@/lib/style'
 import { useUIStore } from '@/store/ui'
@@ -57,6 +58,9 @@ export function ComicPanel({
     toggleComicDeleted,
     toggleComicStarred,
     updateComicImageTags,
+    remoteProgress,
+    jumpToRemote,
+    keepLocalPosition,
   } = useComicReadingSession({
     comicId,
     stripRef,
@@ -103,7 +107,7 @@ export function ComicPanel({
   )
 
   return (
-    <div className={cn('min-h-0 flex-1 flex-col', className)}>
+    <div className={cn('relative min-h-0 flex-1 flex-col', className)}>
       <div className="bg-base text-subtle relative grid h-8 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 overflow-hidden border-b px-3 text-xs">
         <div className="flex shrink-0 gap-2">
           <Button
@@ -182,6 +186,14 @@ export function ComicPanel({
           onHover={setHoveredIndex}
           onDoubleClick={setPreviewIndex}
           onTags={updateComicImageTags}
+        />
+      )}
+
+      {remoteProgress && viewMode === 'scroll' && (
+        <RemoteProgressPrompt
+          label={`第 ${remoteProgress.current + 1} / ${remoteProgress.total} 页`}
+          onJump={jumpToRemote}
+          onDismiss={keepLocalPosition}
         />
       )}
 

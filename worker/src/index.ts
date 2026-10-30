@@ -55,6 +55,27 @@ type PatchParagraphsRequest =
   | { operation: 'update'; paragraph: ParagraphFavorite }
   | { operation: 'remove'; id: string }
 
+interface ProgressEntry {
+  current: number
+  total: number
+  percent: number
+  lastRead: number
+  currentChapterTitle?: string
+}
+
+type ProgressCollection = 'comics' | 'books'
+
+interface RemoteProgress {
+  version: 1
+  comics: Record<string, ProgressEntry>
+  books: Record<string, ProgressEntry>
+  updatedAt?: string
+}
+
+type PatchProgressRequest = Partial<
+  Record<ProgressCollection, Record<string, ProgressEntry>>
+>
+
 type PatchTabsRequest =
   | { operation: 'open'; tabId: string }
   | { operation: 'close'; tabId: string }
@@ -64,9 +85,11 @@ type PatchTabsRequest =
 const TAGS_KEY = '.megumi/tags.json'
 const TABS_KEY = '.megumi/tabs.json'
 const PARAGRAPHS_KEY = '.megumi/paragraphs.json'
+const PROGRESS_KEY = '.megumi/progress.json'
 const EMPTY_TAGS_ETAG = '"empty"'
 const EMPTY_TABS_ETAG = '"empty-tabs"'
 const EMPTY_PARAGRAPHS_ETAG = '"empty-paragraphs"'
+const EMPTY_PROGRESS_ETAG = '"empty-progress"'
 const MAX_TABS = 200
 const MAX_TAB_ID_LENGTH = 1024
 const MAX_TABS_WRITE_ATTEMPTS = 5
@@ -75,6 +98,12 @@ const MAX_PARAGRAPH_ID_LENGTH = 128
 const MAX_PARAGRAPH_TEXT_LENGTH = 10_000
 const MAX_PARAGRAPH_FIELD_LENGTH = 1024
 const MAX_PARAGRAPHS_WRITE_ATTEMPTS = 5
+// Per collection; past it the least recently read entries are dropped.
+const MAX_PROGRESS_ENTRIES = 20_000
+const MAX_PROGRESS_PATCH_ENTRIES = 5000
+const MAX_PROGRESS_ID_LENGTH = 1024
+const MAX_PROGRESS_WRITE_ATTEMPTS = 5
+const PROGRESS_COLLECTIONS: ProgressCollection[] = ['comics', 'books']
 const REVALIDATE_HEADERS = {
   'Cache-Control': 'private, no-cache',
 }
@@ -113,7 +142,7 @@ function corsHeaders(request: Request, env: Env) {
 
   const headers = new Headers({
     Vary: 'Origin',
-    'Access-Control-Allow-Methods': 'GET,PATCH,OPTIONS',
+    'Access-Control-Allow-Methods': 'GET,PATCH,POST,OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type,Authorization',
     'Access-Control-Expose-Headers': 'ETag',
     'Access-Control-Max-Age': '86400',
@@ -780,6 +809,237 @@ async function handleParagraphs(request: Request, env: Env) {
   }
 }
 
+function emptyProgress(): RemoteProgress {
+  return { version: 1, comics: {}, books: {} }
+}
+
+function finiteNumber(value: unknown) {
+  return typeof value === 'number' && Number.isFinite(value)
+}
+
+function normalizeProgressEntry(value: unknown): ProgressEntry | null {
+  if (!value || typeof value !== 'object') return null
+  const source = value as Record<string, unknown>
+  const { current, total, percent, lastRead } = source
+  if (
+    !finiteNumber(current) ||
+    !finiteNumber(total) ||
+    !finiteNumber(percent) ||
+    !finiteNumber(lastRead) ||
+    !Number.isInteger(current) ||
+    !Number.isInteger(total) ||
+    (current as number) < 0 ||
+    (total as number) < 0 ||
+    (lastRead as number) <= 0
+  ) {
+    return null
+  }
+  const currentChapterTitle = optionalBoundedString(
+    source.currentChapterTitle,
+    MAX_PARAGRAPH_FIELD_LENGTH,
+  )
+  if (currentChapterTitle === null) return null
+
+  return {
+    current: current as number,
+    total: total as number,
+    percent: Math.min(100, Math.max(0, percent as number)),
+    lastRead: lastRead as number,
+    ...(currentChapterTitle === undefined ? {} : { currentChapterTitle }),
+  }
+}
+
+// Entries keyed by comic / book id; invalid ids and entries are skipped.
+function normalizeProgressCollection(
+  value: unknown,
+  maxEntries: number,
+): Record<string, ProgressEntry> | null {
+  if (value === undefined) return {}
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const entries = Object.entries(value)
+  if (entries.length > maxEntries) return null
+
+  const collection: Record<string, ProgressEntry> = {}
+  for (const [id, entry] of entries) {
+    if (!id || id.length > MAX_PROGRESS_ID_LENGTH) continue
+    const normalized = normalizeProgressEntry(entry)
+    if (normalized) collection[id] = normalized
+  }
+  return collection
+}
+
+function normalizeProgress(value: unknown): RemoteProgress {
+  if (!value || typeof value !== 'object') return emptyProgress()
+  const source = value as Partial<RemoteProgress>
+  return {
+    version: 1,
+    comics:
+      normalizeProgressCollection(source.comics, Number.POSITIVE_INFINITY) ??
+      {},
+    books:
+      normalizeProgressCollection(source.books, Number.POSITIVE_INFINITY) ??
+      {},
+    updatedAt:
+      typeof source.updatedAt === 'string' ? source.updatedAt : undefined,
+  }
+}
+
+async function parseProgressObject(
+  object: R2ObjectBody | null,
+): Promise<RemoteProgress> {
+  if (!object) return emptyProgress()
+  try {
+    return normalizeProgress(JSON.parse(await object.text()))
+  } catch {
+    return emptyProgress()
+  }
+}
+
+function parseProgressPatchRequest(value: unknown): PatchProgressRequest | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const source = value as Record<string, unknown>
+  const patch: PatchProgressRequest = {}
+  let count = 0
+  for (const collection of PROGRESS_COLLECTIONS) {
+    const entries = normalizeProgressCollection(
+      source[collection],
+      MAX_PROGRESS_PATCH_ENTRIES,
+    )
+    if (!entries) return null
+    count += Object.keys(entries).length
+    patch[collection] = entries
+  }
+  return count && count <= MAX_PROGRESS_PATCH_ENTRIES ? patch : null
+}
+
+function pruneProgressCollection(entries: Record<string, ProgressEntry>) {
+  const ids = Object.keys(entries)
+  if (ids.length <= MAX_PROGRESS_ENTRIES) return
+  ids
+    .sort((a, b) => entries[a].lastRead - entries[b].lastRead)
+    .slice(0, ids.length - MAX_PROGRESS_ENTRIES)
+    .forEach((id) => {
+      delete entries[id]
+    })
+}
+
+// Each entry is kept from whichever device read it last, so a stale device
+// cannot pull another device's newer position back.
+function applyProgressPatch(state: RemoteProgress, patch: PatchProgressRequest) {
+  let changed = false
+  for (const collection of PROGRESS_COLLECTIONS) {
+    const target = state[collection]
+    for (const [id, entry] of Object.entries(patch[collection] ?? {})) {
+      const current = target[id]
+      if (current && current.lastRead >= entry.lastRead) continue
+      target[id] = entry
+      changed = true
+    }
+    if (changed) pruneProgressCollection(target)
+  }
+  return changed
+}
+
+// The stored entries for the ids a patch named: the patch's own entries when
+// they won, the newer stored ones when they did not.
+function pickProgress(state: RemoteProgress, patch: PatchProgressRequest) {
+  const result: PatchProgressRequest = {}
+  for (const collection of PROGRESS_COLLECTIONS) {
+    const picked: Record<string, ProgressEntry> = {}
+    for (const id of Object.keys(patch[collection] ?? {})) {
+      const entry = state[collection][id]
+      if (entry) picked[id] = entry
+    }
+    result[collection] = picked
+  }
+  return result
+}
+
+async function mutateProgress(
+  env: Env,
+  patch: PatchProgressRequest,
+): Promise<{ state: RemoteProgress; etag: string }> {
+  for (let attempt = 0; attempt < MAX_PROGRESS_WRITE_ATTEMPTS; attempt += 1) {
+    const object = await env.MEGUMI_BUCKET.get(PROGRESS_KEY)
+    const state = await parseProgressObject(object)
+    if (!applyProgressPatch(state, patch)) {
+      return { state, etag: object?.httpEtag ?? EMPTY_PROGRESS_ETAG }
+    }
+
+    state.updatedAt = new Date().toISOString()
+    const written = await env.MEGUMI_BUCKET.put(
+      PROGRESS_KEY,
+      JSON.stringify(state),
+      {
+        onlyIf: object
+          ? { etagMatches: object.etag }
+          : { etagDoesNotMatch: '*' },
+        httpMetadata: { contentType: 'application/json; charset=utf-8' },
+      },
+    )
+    if (written) return { state, etag: written.httpEtag }
+  }
+
+  throw new Error('Failed to update progress after concurrent writes')
+}
+
+async function handleProgress(request: Request, env: Env) {
+  if (request.method === 'GET') {
+    const object = await env.MEGUMI_BUCKET.get(PROGRESS_KEY)
+    const etag = object?.httpEtag ?? EMPTY_PROGRESS_ETAG
+    const headers = { ...REVALIDATE_HEADERS, ETag: etag }
+    if (etagMatches(request.headers.get('If-None-Match'), etag)) {
+      const responseHeaders = corsHeaders(request, env)
+      for (const [key, value] of new Headers(headers)) {
+        responseHeaders.set(key, value)
+      }
+      return new Response(null, { status: 304, headers: responseHeaders })
+    }
+    const state = await parseProgressObject(object)
+    return jsonResponse(request, env, state, { headers })
+  }
+
+  // POST takes the same body as PATCH; clients send it as text/plain with
+  // keepalive while a page is being hidden or closed, a request that needs no
+  // CORS preflight.
+  if (request.method !== 'PATCH' && request.method !== 'POST') {
+    return jsonResponse(
+      request,
+      env,
+      { error: 'Method not allowed' },
+      { status: 405, headers: { Allow: 'GET,PATCH,POST,OPTIONS' } },
+    )
+  }
+
+  let patch: PatchProgressRequest | null = null
+  try {
+    patch = parseProgressPatchRequest(await request.json())
+  } catch {
+    patch = null
+  }
+
+  if (!patch) {
+    return jsonResponse(request, env, { error: 'Invalid request' }, { status: 400 })
+  }
+
+  try {
+    const result = await mutateProgress(env, patch)
+    // Only the named entries: the whole file grows with the library and a
+    // patch is sent every few seconds while reading.
+    return jsonResponse(request, env, pickProgress(result.state, patch), {
+      headers: { 'Cache-Control': 'no-store', ETag: result.etag },
+    })
+  } catch (error) {
+    console.error('Failed to update progress:', error)
+    return jsonResponse(
+      request,
+      env,
+      { error: 'Concurrent update conflict' },
+      { status: 409 },
+    )
+  }
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url)
@@ -798,6 +1058,10 @@ export default {
 
     if (url.pathname === '/paragraphs') {
       return handleParagraphs(request, env)
+    }
+
+    if (url.pathname === '/progress') {
+      return handleProgress(request, env)
     }
 
     return jsonResponse(request, env, { error: 'Not found' }, { status: 404 })

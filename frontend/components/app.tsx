@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/ui/spinner'
 import { useLibraryStore } from '@/store/library'
 import { useParagraphsStore } from '@/store/paragraphs'
+import { initializeProgressSync } from '@/store/progress'
 import { initializeThemeSync } from '@/store/ui'
 
 const AUTO_REFRESH_MIN_INTERVAL_MS = 60_000
@@ -22,6 +23,7 @@ export function App() {
 
   useEffect(() => {
     const cleanupThemeSync = initializeThemeSync()
+    const cleanupProgressSync = initializeProgressSync()
     let inflight: Promise<void> | null = null
     let lastAutoRefreshAt = 0
     const refresh = () => {
@@ -52,6 +54,7 @@ export function App() {
       window.removeEventListener('pageshow', refreshWhenVisible)
       document.removeEventListener('visibilitychange', refreshWhenVisible)
       cleanupThemeSync()
+      cleanupProgressSync()
     }
   }, [])
 

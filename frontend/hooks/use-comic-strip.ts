@@ -269,6 +269,20 @@ function getStepOffset(
   return clamp(target, 0, maxOffset)
 }
 
+/**
+ * Where a jump to `index` lands: the page at the start edge, so the page the
+ * strip then reports as current (the first one mostly in view) is the target.
+ * Centering it left the previous page in view, which was saved instead and
+ * moved the position back one page on every jump and reopen.
+ */
+function getJumpOffset(layout: ComicStripLayout, index: number) {
+  return clamp(
+    layout.pages[index].start,
+    0,
+    Math.max(0, layout.totalSize - layout.viewportSize),
+  )
+}
+
 function getScrollOffset(
   container: HTMLDivElement,
   orientation: ComicStripOrientation,
@@ -389,13 +403,7 @@ export function useComicStrip({
       return
     }
 
-    const page = layout.pages[nextIndex]
-    const viewportSize = layout.viewportSize
-    const targetOffset = clamp(
-      page.start - (viewportSize - page.size) / 2,
-      0,
-      Math.max(0, layout.totalSize - viewportSize),
-    )
+    const targetOffset = getJumpOffset(layout, nextIndex)
 
     pendingJumpRef.current = null
     if (orientation === 'horizontal') {
@@ -481,13 +489,7 @@ export function useComicStrip({
       return
     }
 
-    const page = currentLayout.pages[nextIndex]
-    const viewportSize = currentLayout.viewportSize
-    const targetOffset = clamp(
-      page.start - (viewportSize - page.size) / 2,
-      0,
-      Math.max(0, currentLayout.totalSize - viewportSize),
-    )
+    const targetOffset = getJumpOffset(currentLayout, nextIndex)
 
     pendingJumpRef.current = null
     if (orientation === 'horizontal') {

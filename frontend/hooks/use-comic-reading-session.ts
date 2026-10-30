@@ -11,7 +11,11 @@ import { useThrottledProgress } from '@/hooks/use-throttled-progress'
 import { createComicProgress } from '@/lib/progress'
 import { SHORTCUTS } from '@/lib/shortcuts'
 import { useLibraryStore } from '@/store/library'
-import { useProgressStore } from '@/store/progress'
+import {
+  progressKey,
+  useProgressStore,
+  watchProgress,
+} from '@/store/progress'
 import { useTabsStore } from '@/store/tabs'
 import type { ComicLibraryViewMode } from '@/store/ui'
 import {
@@ -82,6 +86,12 @@ export function useComicReadingSession({
 
   const updateComicProgress = useProgressStore((s) => s.updateComicProgress)
   const progress = useProgressStore((s) => s.comics[comicId])
+  const remoteProgress = useProgressStore((s) => s.remote.comics[comicId])
+  const remoteSeq = useProgressStore(
+    (s) => s.remoteSeq[progressKey('comics', comicId)] ?? 0,
+  )
+  const acceptRemote = useProgressStore((s) => s.acceptRemote)
+  const dismissRemote = useProgressStore((s) => s.dismissRemote)
   const savedIndex = progress?.current ?? 0
   const stripVisible =
     surface.kind === 'reader'
@@ -98,13 +108,26 @@ export function useComicReadingSession({
       ? activeTab === comicId
       : !activeTab && surface.readerVisible
 
+  // Whether this surface shows the comic's reading position right now: the
+  // reader tab in front, or the library's page strip with no tab over it.
+  // Another device's newer position is then offered instead of applied.
+  const showsPosition =
+    surface.kind === 'reader'
+      ? activeTab === comicId
+      : stripVisible && !activeTab
+
+  // The position held in memory between throttled saves. A position taken
+  // from another device (remoteSeq) replaces it.
   const [localPosition, setLocalPosition] = useState<{
     comicId: string
     index: number
+    remoteSeq: number
   } | null>(null)
   const [previewIndex, setPreviewIndex] = useState(-1)
   const rawCurrentIndex =
-    localPosition?.comicId === comicId ? localPosition.index : savedIndex
+    localPosition?.comicId === comicId && localPosition.remoteSeq === remoteSeq
+      ? localPosition.index
+      : savedIndex
   const currentIndex = images.length
     ? clampIndex(rawCurrentIndex, images.length)
     : rawCurrentIndex
@@ -115,6 +138,11 @@ export function useComicReadingSession({
   useLayoutEffect(() => {
     currentIndexRef.current = currentIndex
   }, [currentIndex])
+
+  useEffect(() => {
+    if (!showsPosition) return
+    return watchProgress('comics', comicId)
+  }, [comicId, showsPosition])
 
   const comicPath = comic?.path
   useEffect(() => {
@@ -129,14 +157,20 @@ export function useComicReadingSession({
 
   const setCurrentIndex = (index: number) => {
     setLocalPosition((prev) =>
-      prev?.comicId === comicId && prev.index === index
+      prev?.comicId === comicId &&
+      prev.index === index &&
+      prev.remoteSeq === remoteSeq
         ? prev
-        : { comicId, index },
+        : { comicId, index, remoteSeq },
     )
   }
 
+  // For explicit moves (jump, closing the preview). A strip save still waiting
+  // in the throttle would land afterwards and put the old page back,
+  // newer-stamped (and synced), so it is dropped.
   const persistIndex = (index: number) => {
     if (!comic || !images.length) return
+    throttledUpdateProgress.current.cancel()
     updateComicProgress(comic.id, createComicProgress(index, images.length))
   }
 
@@ -170,6 +204,16 @@ export function useComicReadingSession({
       comic.id,
       createComicProgress(index, images.length),
     )
+  }
+
+  const jumpToRemote = () => {
+    if (!remoteProgress) return
+    acceptRemote('comics', comicId)
+    jumpTo(remoteProgress.current)
+  }
+
+  const keepLocalPosition = () => {
+    dismissRemote('comics', comicId)
   }
 
   const setHoveredIndex = (index: number | null) => {
@@ -324,6 +368,9 @@ export function useComicReadingSession({
     setHoveredIndex,
     closePreview,
     continueReading,
+    remoteProgress,
+    jumpToRemote,
+    keepLocalPosition,
     toggleComicDeleted,
     toggleComicStarred,
     updateComicImageTags,

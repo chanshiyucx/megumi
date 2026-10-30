@@ -8,6 +8,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { ComicStrip, type ComicStripHandle } from '@/components/ui/comic-strip'
 import { GridImage, ImagePreviewOverlay } from '@/components/ui/image-view'
+import { RemoteProgressPrompt } from '@/components/ui/remote-progress-prompt'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Spinner } from '@/components/ui/spinner'
 import { useClickOutside } from '@/hooks/use-click-outside'
@@ -145,6 +146,9 @@ export function ComicReader({ comicId }: ComicReaderProps) {
     toggleComicDeleted,
     toggleComicStarred,
     updateComicImageTags,
+    remoteProgress,
+    jumpToRemote,
+    keepLocalPosition,
   } = useComicReadingSession({
     comicId,
     stripRef,
@@ -255,6 +259,14 @@ export function ComicReader({ comicId }: ComicReaderProps) {
           onTags={updateComicImageTags}
         />
       </div>
+
+      {remoteProgress && (
+        <RemoteProgressPrompt
+          label={`第 ${remoteProgress.current + 1} / ${remoteProgress.total} 页`}
+          onJump={jumpToRemote}
+          onDismiss={keepLocalPosition}
+        />
+      )}
 
       <ImagePreviewOverlay
         comicId={comicId}

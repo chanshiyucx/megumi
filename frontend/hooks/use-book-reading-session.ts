@@ -13,7 +13,7 @@ import { createBookProgress } from '@/lib/progress'
 import { parseBook } from '@/lib/scanner'
 import { SHORTCUTS } from '@/lib/shortcuts'
 import { useLibraryStore } from '@/store/library'
-import { useProgressStore } from '@/store/progress'
+import { useProgressStore, watchProgress } from '@/store/progress'
 import { useTabsStore } from '@/store/tabs'
 import {
   LibraryType,
@@ -66,7 +66,13 @@ export function useBookReadingSession({
 
   const updateBookProgress = useProgressStore((s) => s.updateBookProgress)
   const progress = useProgressStore((s) => s.books[bookId])
+  const remoteProgress = useProgressStore((s) => s.remote.books[bookId])
+  const acceptRemote = useProgressStore((s) => s.acceptRemote)
+  const dismissRemote = useProgressStore((s) => s.dismissRemote)
   const currentIndex = progress?.current ?? 0
+  // The reader is on screen: the tab in front, or the library with no tab
+  // over it. Another device's newer position is then offered, not applied.
+  const showsPosition = surface === 'tab' ? activeTab === bookId : !activeTab
   const currentChapterTitle = progress?.currentChapterTitle ?? ''
 
   const { isLock, lockScroll } = useScrollLock()
@@ -78,7 +84,15 @@ export function useBookReadingSession({
   const jumpTo = (targetIndex?: number) => {
     if (!book || !content) return
 
-    const index = targetIndex ?? currentIndex
+    // Read the store, not this render: a jump request and the restore after
+    // loading run in the same commit, and the restore must aim where the
+    // jump just moved the progress rather than where it was before.
+    const index =
+      targetIndex ?? useProgressStore.getState().books[bookId]?.current ?? 0
+    // A scroll save still waiting in the throttle would land after the jump
+    // and put the old line back, newer-stamped (and synced). A restore keeps
+    // it: that save is the latest position.
+    if (targetIndex !== undefined) throttledUpdateProgress.current.cancel()
     const newProgress = createBookProgress(
       index,
       content.lines.length,
@@ -140,13 +154,17 @@ export function useBookReadingSession({
       setLoadProgress(0)
       try {
         const [data, chapters] = await Promise.all([
-          parseBook(book.path, (percent) => {
-            if (!cancelled) setLoadProgress(percent)
+          parseBook(book.path, {
+            force,
+            onProgress: (percent) => {
+              if (!cancelled) setLoadProgress(percent)
+            },
           }),
           getBookChapters(bookId, { force }),
         ])
-        data.chapters = chapters
-        if (!cancelled) setBookData({ bookId, content: data })
+        // The parsed text is shared with other readers of this book.
+        const content = { lines: data.lines, chapters }
+        if (!cancelled) setBookData({ bookId, content })
       } catch (e) {
         console.error('Failed to load book', e)
       } finally {
@@ -162,6 +180,11 @@ export function useBookReadingSession({
   useLayoutEffect(() => {
     lockScroll()
   }, [lockScroll, bookId])
+
+  useEffect(() => {
+    if (!showsPosition) return
+    return watchProgress('books', bookId)
+  }, [bookId, showsPosition])
 
   // The library reuses this reader across books and virtuosoRef follows the
   // new list, so a pending realign must not outlive the book it aims into.
@@ -181,6 +204,15 @@ export function useBookReadingSession({
     jumpToFn()
   }, [activeTab, bookId, surface])
 
+  // The list opens at the saved line by estimated heights and can land a few
+  // lines off; aim again once the text is in, the same way a jump does.
+  const restoreLoadedPosition = useEffectEvent(() => {
+    if (showsPosition) jumpTo()
+  })
+  useEffect(() => {
+    if (content) restoreLoadedPosition()
+  }, [content])
+
   const trackTopLine = (lineIndex: number) => {
     if (isLock.current) return
     if (!book || !content) return
@@ -191,6 +223,16 @@ export function useBookReadingSession({
       content.chapters,
     )
     throttledUpdateProgress.current(book.id, newProgress)
+  }
+
+  const jumpToRemote = () => {
+    if (!remoteProgress || !content) return
+    acceptRemote('books', bookId)
+    jumpTo(Math.min(remoteProgress.current, content.lines.length - 1))
+  }
+
+  const keepLocalPosition = () => {
+    dismissRemote('books', bookId)
   }
 
   const closeToc = () => {
@@ -276,6 +318,9 @@ export function useBookReadingSession({
     toggleBookDeleted,
     toggleBookStarred,
     toggleChapterStarred,
+    remoteProgress,
+    jumpToRemote,
+    keepLocalPosition,
     starredLines: paragraphFavorites.starredLines,
     toggleLines: paragraphFavorites.toggleLines,
   }

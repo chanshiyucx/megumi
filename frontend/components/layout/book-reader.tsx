@@ -17,6 +17,7 @@ import { useBookReadingSession } from '@/hooks/use-book-reading-session'
 import { useClickOutside } from '@/hooks/use-click-outside'
 import { useParagraphSelection } from '@/hooks/use-paragraph-selection'
 import { cn } from '@/lib/style'
+import { useProgressStore } from '@/store/progress'
 import type { Chapter, JumpRequest } from '@/types/library'
 
 // Must match ReaderPadding's h-16; the favorites rail maps lines to pixels.
@@ -30,6 +31,9 @@ const ReaderPadding = {
 // the lines' pr-6 text edge.
 const OVERLAY_SCROLLBAR_RAIL_OFFSET_PX = 8
 const MARKER_LABEL_LENGTH = 40
+// A marker's button height (h-4): markers closer than this on the rail would
+// cover each other, so they merge into one.
+const MARKER_SIZE_PX = 16
 
 const TOP_OVERSCAN_PX = 800
 const BOTTOM_OVERSCAN_PX = 200
@@ -211,40 +215,130 @@ interface FavoriteMarker {
   label: string
 }
 
+interface MarkerGroup {
+  key: string
+  kind: FavoriteMarker['kind']
+  // Where the first marker sits and where a click jumps.
+  lineIndex: number
+  top: number
+  // Line of the last marker: the group counts as read once it is passed.
+  lastLineIndex: number
+  count: number
+  label: string
+}
+
+// Merges markers whose buttons would overlap on a rail `railHeight` tall.
+function groupMarkers(markers: FavoriteMarker[], railHeight: number) {
+  const sorted = [...markers].sort((a, b) => a.top - b.top)
+  const minGap = railHeight > 0 ? (MARKER_SIZE_PX / railHeight) * 100 : 0
+  const groups: MarkerGroup[] = []
+  for (const marker of sorted) {
+    const group = groups.at(-1)
+    if (group && marker.top - group.top < minGap) {
+      group.count += 1
+      group.lastLineIndex = Math.max(group.lastLineIndex, marker.lineIndex)
+      group.label += `\n${marker.label}`
+      // A chapter in the group shows as its dash.
+      if (marker.kind === 'chapter') group.kind = 'chapter'
+      continue
+    }
+    groups.push({
+      key: marker.key,
+      kind: marker.kind,
+      lineIndex: marker.lineIndex,
+      top: marker.top,
+      lastLineIndex: marker.lineIndex,
+      count: 1,
+      label: marker.label,
+    })
+  }
+  for (const group of groups) {
+    if (group.count > 1) group.label = `${group.count} 处收藏\n${group.label}`
+  }
+  return groups
+}
+
 interface FavoriteRailProps {
+  bookId: string
   markers: FavoriteMarker[]
+  // Position along the scroll height (0-100) of a line, on the markers' scale.
+  topOf: (lineIndex: number) => number
   right: number
   onJump: (lineIndex: number) => void
 }
 
 // Marks favorited chapters (dashes) and paragraph runs (dots) beside the
-// scrollbar at their share of the scroll height; a click jumps there.
-function FavoriteRail({ markers, right, onJump }: FavoriteRailProps) {
-  if (!markers.length) return null
+// scrollbar at their share of the scroll height; a click jumps there. A thin
+// line marks the reading position, and the favorites already passed are
+// dimmed, so the rail tells what is still ahead even with the scrollbar
+// hidden.
+function FavoriteRail({
+  bookId,
+  markers,
+  topOf,
+  right,
+  onJump,
+}: FavoriteRailProps) {
+  const railRef = useRef<HTMLDivElement>(null)
+  const [railHeight, setRailHeight] = useState(0)
+  // The rail alone follows the position, so scrolling re-renders only it.
+  const currentLine = useProgressStore((s) => s.books[bookId]?.current ?? 0)
+  const hasMarkers = markers.length > 0
+  const groups = useMemo(
+    () => groupMarkers(markers, railHeight),
+    [markers, railHeight],
+  )
+
+  useLayoutEffect(() => {
+    const rail = railRef.current
+    if (!rail) return
+    const observer = new ResizeObserver(() => {
+      // A hidden reader measures 0; keep the groups it had.
+      if (rail.clientHeight > 0) setRailHeight(rail.clientHeight)
+    })
+    observer.observe(rail)
+    return () => {
+      observer.disconnect()
+    }
+  }, [hasMarkers])
+
+  if (!hasMarkers) return null
   return (
     <div
+      ref={railRef}
       aria-label="收藏位置"
       className="pointer-events-none absolute inset-y-2 z-10 w-3"
       style={{ right }}
     >
-      {markers.map((marker) => (
+      <span
+        aria-hidden="true"
+        className="bg-subtle absolute left-0 h-px w-3"
+        style={{ top: `${topOf(currentLine)}%` }}
+      />
+      {groups.map((group) => (
         <button
-          key={marker.key}
+          key={group.key}
           type="button"
-          title={marker.label}
-          aria-label={marker.label}
-          className="pointer-events-auto absolute left-1/2 flex h-4 w-3 -translate-x-1/2 -translate-y-1/2 items-center justify-center"
-          style={{ top: `${marker.top}%` }}
+          title={group.label}
+          aria-label={group.label}
+          className={cn(
+            'pointer-events-auto absolute left-1/2 flex h-4 w-3 -translate-x-1/2 -translate-y-1/2 items-center justify-center',
+            group.lastLineIndex < currentLine && 'opacity-40',
+          )}
+          style={{ top: `${group.top}%` }}
           onClick={() => {
-            onJump(marker.lineIndex)
+            onJump(group.lineIndex)
           }}
         >
           <span
             className={cn(
               'rounded-full',
-              marker.kind === 'chapter'
+              group.kind === 'chapter'
                 ? 'bg-gold h-0.5 w-2.5'
-                : 'bg-love h-1.5 w-1.5',
+                : group.count > 1
+                  ? 'bg-love h-2 w-2'
+                  : 'bg-love h-1.5 w-1.5',
+              group.kind === 'chapter' && group.count > 1 && 'h-1',
             )}
           />
         </button>
@@ -274,6 +368,7 @@ function excerpt(line: string) {
 }
 
 interface VirtualBookProps {
+  bookId: string
   imageBaseUrl: string | null
   readInitialIndex: () => number
   lines: readonly string[]
@@ -286,6 +381,7 @@ interface VirtualBookProps {
 }
 
 function VirtualBook({
+  bookId,
   imageBaseUrl,
   readInitialIndex,
   lines,
@@ -359,10 +455,14 @@ function VirtualBook({
     return { lines: estimation.lines, offsets, total: total + READER_PADDING_PX }
   }, [estimation])
 
+  const topOf = useMemo(
+    () => (lineIndex: number) =>
+      layout ? ((layout.offsets[lineIndex] ?? 0) / layout.total) * 100 : 0,
+    [layout],
+  )
+
   const markers = useMemo(() => {
     if (!layout || layout.lines !== lines) return []
-    const topOf = (lineIndex: number) =>
-      ((layout.offsets[lineIndex] ?? 0) / layout.total) * 100
 
     const result: FavoriteMarker[] = favoriteChapters.map((chapter) => ({
       key: `chapter-${chapter.lineIndex}`,
@@ -395,7 +495,7 @@ function VirtualBook({
       })
     }
     return result
-  }, [favoriteChapters, layout, lines, starredLines])
+  }, [favoriteChapters, layout, lines, starredLines, topOf])
 
   useLayoutEffect(() => {
     const probe = probeRef.current
@@ -454,7 +554,13 @@ function VirtualBook({
           }}
         />
       ) : null}
-      <FavoriteRail markers={markers} right={railRight} onJump={onJump} />
+      <FavoriteRail
+        bookId={bookId}
+        markers={markers}
+        topOf={topOf}
+        right={railRight}
+        onJump={onJump}
+      />
       {selection && (
         <ParagraphFavoriteButton
           x={selection.x}
@@ -714,6 +820,7 @@ export function BookReader({
 
       <VirtualBook
         key={bookId}
+        bookId={bookId}
         imageBaseUrl={imageBaseUrl}
         virtuosoRef={virtuosoRef}
         lines={lines}

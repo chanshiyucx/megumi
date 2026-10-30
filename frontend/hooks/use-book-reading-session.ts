@@ -7,7 +7,6 @@ import {
 } from 'react'
 import type { BookTextHandle } from '@/components/layout/book-reader'
 import { useParagraphFavorites } from '@/hooks/use-paragraph-favorites'
-import { useScrollLock } from '@/hooks/use-scroll-lock'
 import { createBookProgress } from '@/lib/progress'
 import { parseBook } from '@/lib/scanner'
 import { SHORTCUTS } from '@/lib/shortcuts'
@@ -77,15 +76,12 @@ export function useBookReadingSession({
   // The reader is on screen: the tab in front, or the library with no tab
   // over it. Another device's newer position is then offered, not applied.
   const showsPosition = surface === 'tab' ? activeTab === bookId : !activeTab
-  // Where the text opens, read when it mounts for a book.
-  const readPosition = () =>
-    useProgressStore.getState().books[bookId]?.current ?? 0
 
-  const { isLock, lockScroll } = useScrollLock()
   const refreshTokenRef = useRef({ bookId, token: bookRefreshToken })
   const handledJumpRef = useRef(0)
-  // The line this reader's list has at the top: last reported or jumped to.
-  const shownLineRef = useRef<number | null>(null)
+  // The line the text has at the top, last reported or jumped to, and the
+  // loaded text it is a line of.
+  const shownRef = useRef<{ content: BookContent; line: number } | null>(null)
 
   const jumpTo = (targetIndex?: number) => {
     if (!book || !content) return
@@ -101,11 +97,7 @@ export function useBookReadingSession({
       content.chapters,
     )
     updateBookProgress(book.id, newProgress)
-    shownLineRef.current = index
-
-    // A line near the end cannot reach the top; the lock keeps the scroll
-    // that lands short of it from saving an earlier line over the target.
-    lockScroll()
+    shownRef.current = { content, line: index }
     bookTextRef.current?.scrollToLine(index)
   }
   const jumpToFn = useEffectEvent(jumpTo)
@@ -165,49 +157,27 @@ export function useBookReadingSession({
     }
   }, [bookId, book?.path, bookRefreshToken, getBookChapters])
 
-  useLayoutEffect(() => {
-    lockScroll()
-  }, [lockScroll, bookId])
-
   useEffect(() => {
     if (!showsPosition) return
     return watchProgress('books', bookId)
   }, [bookId, showsPosition])
 
-  // The library reuses this reader across books: the line shown belonged to
-  // the last one.
-  useEffect(
-    () => () => {
-      shownLineRef.current = null
-    },
-    [bookId],
-  )
-
-  // A reader coming back into view is still where it was left, to the pixel;
-  // aiming at the saved line again would drop the part of it scrolled past.
-  // Move it only if the position changed meanwhile: read in another tab or
-  // the library, or taken from another device while out of view.
+  // A text just loaded opens at the saved line. One coming back into view is
+  // still where it was left, to the pixel; aiming at the saved line again
+  // would drop the part of it scrolled past, so it moves only if the position
+  // changed meanwhile: read in another tab or the library, or taken from
+  // another device while out of view.
   useLayoutEffect(() => {
-    if (!showsPosition) return
+    if (!showsPosition || !content) return
+    const shown = shownRef.current
     const saved = useProgressStore.getState().books[bookId]?.current ?? 0
-    if (shownLineRef.current !== saved) jumpToFn()
-  }, [bookId, showsPosition])
-
-  // The text opens at the saved line by itself; jumping there again records
-  // it as the line shown, and the lock keeps a line near the end (which cannot
-  // reach the top) from being saved over by the line that does.
-  const restoreLoadedPosition = useEffectEvent(() => {
-    if (showsPosition) jumpTo()
-  })
-  useEffect(() => {
-    if (content) restoreLoadedPosition()
-  }, [content])
+    if (shown?.content !== content || shown.line !== saved) jumpToFn()
+  }, [bookId, content, showsPosition])
 
   const trackTopLine = (lineIndex: number) => {
-    if (isLock.current) return
     if (!book || !content) return
 
-    shownLineRef.current = lineIndex
+    shownRef.current = { content, line: lineIndex }
     const newProgress = createBookProgress(
       lineIndex,
       content.lines.length,
@@ -295,7 +265,6 @@ export function useBookReadingSession({
     content,
     lines,
     percent,
-    readPosition,
     currentChapterTitle,
     isLoading,
     loadProgress,

@@ -359,8 +359,6 @@ interface BookTextProps {
   ref: Ref<BookTextHandle>
   bookId: string
   imageBaseUrl: string | null
-  // Where the text opens, read once when it mounts.
-  readInitialIndex: () => number
   lines: readonly string[]
   onTopLineChange: (lineIndex: number) => void
   starredLines: ReadonlySet<number>
@@ -378,7 +376,6 @@ function BookText({
   ref,
   bookId,
   imageBaseUrl,
-  readInitialIndex,
   lines,
   onTopLineChange,
   starredLines,
@@ -397,13 +394,21 @@ function BookText({
   const [railRight, setRailRight] = useState(OVERLAY_SCROLLBAR_RAIL_OFFSET_PX)
   // Each line's top as a share (0-100) of the scroll height, for the rail.
   const [lineTops, setLineTops] = useState<number[] | null>(null)
+  // The line the last jump put at the top and where that left the scroller.
+  // Until the reader scrolls, the jump holds: a reflow (a picture loading)
+  // puts the line back at the top, and the scrolls the jump and the reflow
+  // fire are not the reader's. They would report the line jumped to, or for
+  // a line near the end (which cannot reach the top) an earlier one.
+  const jumpRef = useRef<{ line: number; top: number } | null>(null)
 
   const scrollToLine = (lineIndex: number) => {
     const scroller = scrollerRef.current
     const line = textRef.current?.children[lineIndex] as
       | HTMLElement
       | undefined
-    if (scroller && line) scroller.scrollTop = line.offsetTop
+    if (!scroller || !line) return
+    scroller.scrollTop = line.offsetTop
+    jumpRef.current = { line: lineIndex, top: scroller.scrollTop }
   }
   useImperativeHandle(ref, () => ({ scrollToLine }))
 
@@ -411,15 +416,13 @@ function BookText({
     const scroller = scrollerRef.current
     const text = textRef.current
     if (!scroller || !text) return
+    if (scroller.scrollTop === jumpRef.current?.top) return
+    jumpRef.current = null
     const lineIndex = topVisibleLine(scroller, text)
     if (lineIndex !== null) onTopLineChange(lineIndex)
   })
-  const openAtSavedLine = useEffectEvent(() => {
-    scrollToLine(readInitialIndex())
-  })
 
   useLayoutEffect(() => {
-    openAtSavedLine()
     // Sit just left of a classic scrollbar; overlay scrollbars take no width.
     const scroller = scrollerRef.current
     if (!scroller) return
@@ -448,7 +451,7 @@ function BookText({
   }, [])
 
   // Measured from the laid-out text, again whenever it reflows (a new width,
-  // a picture loading).
+  // a picture loading), after putting a jump still held back in place.
   useLayoutEffect(() => {
     const scroller = scrollerRef.current
     const text = textRef.current
@@ -457,6 +460,7 @@ function BookText({
       const total = scroller.scrollHeight
       // A hidden reader measures 0; keep what it had.
       if (!total || !scroller.clientHeight) return
+      if (jumpRef.current) scrollToLine(jumpRef.current.line)
       setLineTops(
         Array.from(
           text.children,
@@ -655,7 +659,6 @@ export function BookReader({
     content,
     lines,
     percent,
-    readPosition,
     currentChapterTitle,
     isLoading,
     loadProgress,
@@ -786,7 +789,6 @@ export function BookReader({
         imageBaseUrl={imageBaseUrl}
         ref={bookTextRef}
         lines={lines}
-        readInitialIndex={readPosition}
         onTopLineChange={trackTopLine}
         starredLines={starredLines}
         onToggleLines={toggleLines}

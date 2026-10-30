@@ -270,7 +270,7 @@ function excerpt(line: string) {
 
 interface VirtualBookProps {
   imageBaseUrl: string | null
-  initialTopMostItemIndex: number
+  readInitialIndex: () => number
   lines: readonly string[]
   onTopLineChange: (lineIndex: number) => void
   virtuosoRef: RefObject<VirtuosoHandle | null>
@@ -282,7 +282,7 @@ interface VirtualBookProps {
 
 function VirtualBook({
   imageBaseUrl,
-  initialTopMostItemIndex,
+  readInitialIndex,
   lines,
   onTopLineChange,
   virtuosoRef,
@@ -430,7 +430,7 @@ function VirtualBook({
           className="h-full"
           data={lines}
           heightEstimates={estimation.heights}
-          initialTopMostItemIndex={initialTopMostItemIndex}
+          initialTopMostItemIndex={readInitialIndex()}
           scrollerRef={(element) => {
             setScroller(element instanceof HTMLElement ? element : null)
           }}
@@ -581,8 +581,8 @@ export function BookReader({
     book,
     content,
     lines,
-    progress,
-    currentIndex,
+    percent,
+    readPosition,
     currentChapterTitle,
     isLoading,
     loadProgress,
@@ -699,8 +699,8 @@ export function BookReader({
             <span className="tabular-nums">
               {loadProgress > 0 ? `${loadProgress}%` : '刷新中'}
             </span>
-          ) : progress?.percent > 0 ? (
-            <span>{Math.round(progress.percent)}%</span>
+          ) : percent > 0 ? (
+            <span>{percent}%</span>
           ) : (
             null
           )}
@@ -712,7 +712,7 @@ export function BookReader({
         imageBaseUrl={imageBaseUrl}
         virtuosoRef={virtuosoRef}
         lines={lines}
-        initialTopMostItemIndex={currentIndex}
+        readInitialIndex={readPosition}
         onTopLineChange={trackTopLine}
         starredLines={starredLines}
         onToggleLines={toggleLines}

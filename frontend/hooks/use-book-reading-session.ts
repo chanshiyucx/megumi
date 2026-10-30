@@ -8,7 +8,6 @@ import {
 import type { VirtuosoHandle } from 'react-virtuoso'
 import { useParagraphFavorites } from '@/hooks/use-paragraph-favorites'
 import { useScrollLock } from '@/hooks/use-scroll-lock'
-import { useThrottledProgress } from '@/hooks/use-throttled-progress'
 import { createBookProgress } from '@/lib/progress'
 import { parseBook } from '@/lib/scanner'
 import { SHORTCUTS } from '@/lib/shortcuts'
@@ -65,18 +64,26 @@ export function useBookReadingSession({
   const lines = content?.lines ?? EMPTY_LINES
 
   const updateBookProgress = useProgressStore((s) => s.updateBookProgress)
-  const progress = useProgressStore((s) => s.books[bookId])
+  // Only what the header and TOC show is subscribed to: the position itself
+  // changes with every line scrolled past.
+  const currentChapterTitle = useProgressStore(
+    (s) => s.books[bookId]?.currentChapterTitle ?? '',
+  )
+  const percent = useProgressStore((s) =>
+    Math.round(s.books[bookId]?.percent ?? 0),
+  )
   const remoteProgress = useProgressStore((s) => s.remote.books[bookId])
   const acceptRemote = useProgressStore((s) => s.acceptRemote)
   const dismissRemote = useProgressStore((s) => s.dismissRemote)
-  const currentIndex = progress?.current ?? 0
   // The reader is on screen: the tab in front, or the library with no tab
   // over it. Another device's newer position is then offered, not applied.
   const showsPosition = surface === 'tab' ? activeTab === bookId : !activeTab
-  const currentChapterTitle = progress?.currentChapterTitle ?? ''
+  // Where the list opens, read whenever it mounts: for a new book, or again
+  // when the text width changes and it re-measures.
+  const readPosition = () =>
+    useProgressStore.getState().books[bookId]?.current ?? 0
 
   const { isLock, lockScroll } = useScrollLock()
-  const throttledUpdateProgress = useThrottledProgress(updateBookProgress)
   const refreshTokenRef = useRef({ bookId, token: bookRefreshToken })
   const handledJumpRef = useRef(0)
   const realignFrameRef = useRef<number | null>(null)
@@ -89,10 +96,6 @@ export function useBookReadingSession({
     // jump just moved the progress rather than where it was before.
     const index =
       targetIndex ?? useProgressStore.getState().books[bookId]?.current ?? 0
-    // A scroll save still waiting in the throttle would land after the jump
-    // and put the old line back, newer-stamped (and synced). A restore keeps
-    // it: that save is the latest position.
-    if (targetIndex !== undefined) throttledUpdateProgress.current.cancel()
     const newProgress = createBookProgress(
       index,
       content.lines.length,
@@ -222,7 +225,7 @@ export function useBookReadingSession({
       content.lines.length,
       content.chapters,
     )
-    throttledUpdateProgress.current(book.id, newProgress)
+    updateBookProgress(book.id, newProgress)
   }
 
   const jumpToRemote = () => {
@@ -303,8 +306,8 @@ export function useBookReadingSession({
     book,
     content,
     lines,
-    progress,
-    currentIndex,
+    percent,
+    readPosition,
     currentChapterTitle,
     isLoading,
     loadProgress,

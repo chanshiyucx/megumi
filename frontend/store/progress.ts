@@ -1,5 +1,9 @@
 import { create } from 'zustand'
-import { createJSONStorage, persist } from 'zustand/middleware'
+import {
+  persist,
+  type PersistStorage,
+  type StorageValue,
+} from 'zustand/middleware'
 import { immer } from 'zustand/middleware/immer'
 import {
   emptyProgressSnapshot,
@@ -20,9 +24,6 @@ interface ProgressState {
   // Newer positions from another device for a comic / book on screen here.
   // The reader offers to jump there instead of moving under the reader.
   remote: ProgressSnapshot
-  // Bumped each time another device's position replaces a local one, so a
-  // reader drops a position it only holds in memory.
-  remoteSeq: Record<string, number>
   updateComicProgress: (comicId: string, progress: ComicProgress) => void
   updateBookProgress: (bookId: string, progress: BookProgress) => void
   refresh: () => Promise<void>
@@ -39,7 +40,10 @@ interface PersistedProgressState {
   books: Record<string, BookProgress>
 }
 
-// Writes are batched: the first change waits this long for more to join it.
+// Readers write every position as it changes (each line scrolled past); the
+// whole map goes to localStorage at most this often, and the Worker gets a
+// batch: the first change waits PUSH_DELAY_MS for more to join it.
+const PERSIST_DELAY_MS = 1000
 const PUSH_DELAY_MS = 5000
 const PUSH_CHUNK_ENTRIES = 1000
 // keepalive requests share a 64 KB body budget per page; one request with
@@ -56,7 +60,7 @@ const viewing = new Map<string, number>()
 let pushTimer: ReturnType<typeof setTimeout> | null = null
 let refreshLoad: Promise<void> | null = null
 
-export function progressKey(collection: ProgressCollection, id: string) {
+function progressKey(collection: ProgressCollection, id: string) {
   return `${collection}:${id}`
 }
 
@@ -90,11 +94,55 @@ function settleOffered(collection: ProgressCollection, id: string) {
   const apply = !local || offered.lastRead > local.lastRead
   useProgressStore.setState((draft) => {
     delete draft.remote[collection][id]
-    if (!apply) return
-    draft[collection][id] = offered
-    const key = progressKey(collection, id)
-    draft.remoteSeq[key] = (draft.remoteSeq[key] ?? 0) + 1
+    if (apply) draft[collection][id] = offered
   })
+}
+
+/**
+ * localStorage behind a delay: the latest state waits in memory and is written
+ * once PERSIST_DELAY_MS after the first change, or right away when the page is
+ * hidden or closed.
+ */
+function createDeferredStorage<S>(): PersistStorage<S> | undefined {
+  if (typeof window === 'undefined') return undefined
+
+  const pending = new Map<string, StorageValue<S>>()
+  let timer: ReturnType<typeof setTimeout> | null = null
+  const flush = () => {
+    if (timer !== null) {
+      clearTimeout(timer)
+      timer = null
+    }
+    for (const [name, value] of pending) {
+      try {
+        localStorage.setItem(name, JSON.stringify(value))
+      } catch (error) {
+        console.error('Failed to save progress:', error)
+      }
+    }
+    pending.clear()
+  }
+  window.addEventListener('pagehide', flush)
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') flush()
+  })
+
+  return {
+    getItem: (name) => {
+      const value = pending.get(name)
+      if (value) return value
+      const stored = localStorage.getItem(name)
+      return stored ? (JSON.parse(stored) as StorageValue<S>) : null
+    },
+    setItem: (name, value) => {
+      pending.set(name, value)
+      timer ??= setTimeout(flush, PERSIST_DELAY_MS)
+    },
+    removeItem: (name) => {
+      pending.delete(name)
+      localStorage.removeItem(name)
+    },
+  }
 }
 
 function isProgressRecord(value: unknown) {
@@ -222,8 +270,6 @@ function mergeRemote(snapshot: ProgressSnapshot) {
     for (const [collection, id, entry] of applied) {
       draft[collection][id] = entry
       delete draft.remote[collection][id]
-      const key = progressKey(collection, id)
-      draft.remoteSeq[key] = (draft.remoteSeq[key] ?? 0) + 1
     }
     for (const [collection, id, entry] of offered) {
       draft.remote[collection][id] = entry
@@ -312,7 +358,6 @@ export const useProgressStore = create<ProgressState>()(
       comics: {},
       books: {},
       remote: emptyProgressSnapshot(),
-      remoteSeq: {},
       updateComicProgress: (comicId, progress) => {
         const previous = get().comics[comicId]
         if (samePosition(previous, progress)) return
@@ -385,7 +430,7 @@ export const useProgressStore = create<ProgressState>()(
     })),
     {
       name: 'megumi-progress',
-      storage: createJSONStorage(() => localStorage),
+      storage: createDeferredStorage<PersistedProgressState>(),
       partialize: (state): PersistedProgressState => ({
         comics: state.comics,
         books: state.books,

@@ -7,15 +7,10 @@ import {
   type RefObject,
 } from 'react'
 import type { ComicStripHandle } from '@/components/ui/comic-strip'
-import { useThrottledProgress } from '@/hooks/use-throttled-progress'
 import { createComicProgress } from '@/lib/progress'
 import { SHORTCUTS } from '@/lib/shortcuts'
 import { useLibraryStore } from '@/store/library'
-import {
-  progressKey,
-  useProgressStore,
-  watchProgress,
-} from '@/store/progress'
+import { useProgressStore, watchProgress } from '@/store/progress'
 import { useTabsStore } from '@/store/tabs'
 import type { ComicLibraryViewMode } from '@/store/ui'
 import {
@@ -87,9 +82,6 @@ export function useComicReadingSession({
   const updateComicProgress = useProgressStore((s) => s.updateComicProgress)
   const progress = useProgressStore((s) => s.comics[comicId])
   const remoteProgress = useProgressStore((s) => s.remote.comics[comicId])
-  const remoteSeq = useProgressStore(
-    (s) => s.remoteSeq[progressKey('comics', comicId)] ?? 0,
-  )
   const acceptRemote = useProgressStore((s) => s.acceptRemote)
   const dismissRemote = useProgressStore((s) => s.dismissRemote)
   const savedIndex = progress?.current ?? 0
@@ -116,24 +108,12 @@ export function useComicReadingSession({
       ? activeTab === comicId
       : stripVisible && !activeTab
 
-  // The position held in memory between throttled saves. A position taken
-  // from another device (remoteSeq) replaces it.
-  const [localPosition, setLocalPosition] = useState<{
-    comicId: string
-    index: number
-    remoteSeq: number
-  } | null>(null)
   const [previewIndex, setPreviewIndex] = useState(-1)
-  const rawCurrentIndex =
-    localPosition?.comicId === comicId && localPosition.remoteSeq === remoteSeq
-      ? localPosition.index
-      : savedIndex
   const currentIndex = images.length
-    ? clampIndex(rawCurrentIndex, images.length)
-    : rawCurrentIndex
+    ? clampIndex(savedIndex, images.length)
+    : savedIndex
   const currentIndexRef = useRef(currentIndex)
   const hoveredIndexRef = useRef<number | null>(null)
-  const throttledUpdateProgress = useThrottledProgress(updateComicProgress)
 
   useLayoutEffect(() => {
     currentIndexRef.current = currentIndex
@@ -155,34 +135,20 @@ export function useComicReadingSession({
     stripRef.current?.jumpTo(currentIndexRef.current)
   }, [comicId, images.length, stripRef, stripVisible])
 
-  const setCurrentIndex = (index: number) => {
-    setLocalPosition((prev) =>
-      prev?.comicId === comicId &&
-      prev.index === index &&
-      prev.remoteSeq === remoteSeq
-        ? prev
-        : { comicId, index, remoteSeq },
-    )
-  }
-
-  // For explicit moves (jump, closing the preview). A strip save still waiting
-  // in the throttle would land afterwards and put the old page back,
-  // newer-stamped (and synced), so it is dropped.
-  const persistIndex = (index: number) => {
+  const saveIndex = (index: number) => {
     if (!comic || !images.length) return
-    throttledUpdateProgress.current.cancel()
     updateComicProgress(comic.id, createComicProgress(index, images.length))
   }
 
   useEffect(() => {
     if (!comic || !images.length) return
-    const nextIndex = clampIndex(rawCurrentIndex, images.length)
-    if (nextIndex === rawCurrentIndex) return
+    const nextIndex = clampIndex(savedIndex, images.length)
+    if (nextIndex === savedIndex) return
     updateComicProgress(
       comic.id,
       createComicProgress(nextIndex, images.length),
     )
-  }, [comic, images.length, rawCurrentIndex, updateComicProgress])
+  }, [comic, images.length, savedIndex, updateComicProgress])
 
   const jumpTo = (index?: number) => {
     if (!comic || !images.length) return
@@ -191,19 +157,13 @@ export function useComicReadingSession({
       index ?? currentIndexRef.current,
       images.length,
     )
-    setCurrentIndex(nextIndex)
-    persistIndex(nextIndex)
+    saveIndex(nextIndex)
     stripRef.current?.jumpTo(nextIndex)
   }
 
   const trackStripIndex = (index: number) => {
-    if (!comic || !images.length || !stripVisible) return
-
-    setCurrentIndex(index)
-    throttledUpdateProgress.current(
-      comic.id,
-      createComicProgress(index, images.length),
-    )
+    if (!stripVisible) return
+    saveIndex(index)
   }
 
   const jumpToRemote = () => {
@@ -272,8 +232,7 @@ export function useComicReadingSession({
   const closePreview = () => {
     if (previewIndex >= 0 && images.length) {
       const nextIndex = clampIndex(previewIndex, images.length)
-      setCurrentIndex(nextIndex)
-      persistIndex(nextIndex)
+      saveIndex(nextIndex)
       if (stripVisible) stripRef.current?.jumpTo(nextIndex)
     }
     setPreviewIndex(-1)

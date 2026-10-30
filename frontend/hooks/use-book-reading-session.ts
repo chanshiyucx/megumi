@@ -5,7 +5,7 @@ import {
   useRef,
   useState,
 } from 'react'
-import type { VirtuosoHandle } from 'react-virtuoso'
+import type { BookTextHandle } from '@/components/layout/book-reader'
 import { useParagraphFavorites } from '@/hooks/use-paragraph-favorites'
 import { useScrollLock } from '@/hooks/use-scroll-lock'
 import { createBookProgress } from '@/lib/progress'
@@ -22,7 +22,6 @@ import {
 } from '@/types/library'
 
 const EMPTY_LINES: string[] = []
-const JUMP_REALIGN_FRAMES = 10
 
 interface BookData {
   bookId: string
@@ -41,7 +40,7 @@ export function useBookReadingSession({
   surface,
   jumpRequest,
 }: UseBookReadingSessionOptions) {
-  const virtuosoRef = useRef<VirtuosoHandle>(null)
+  const bookTextRef = useRef<BookTextHandle>(null)
   const [isTocCollapsed, setTocCollapsed] = useState(true)
   const [bookData, setBookData] = useState<BookData | null>(null)
   const [isLoading, setIsLoading] = useState(false)
@@ -78,15 +77,13 @@ export function useBookReadingSession({
   // The reader is on screen: the tab in front, or the library with no tab
   // over it. Another device's newer position is then offered, not applied.
   const showsPosition = surface === 'tab' ? activeTab === bookId : !activeTab
-  // Where the list opens, read whenever it mounts: for a new book, or again
-  // when the text width changes and it re-measures.
+  // Where the text opens, read when it mounts for a book.
   const readPosition = () =>
     useProgressStore.getState().books[bookId]?.current ?? 0
 
   const { isLock, lockScroll } = useScrollLock()
   const refreshTokenRef = useRef({ bookId, token: bookRefreshToken })
   const handledJumpRef = useRef(0)
-  const realignFrameRef = useRef<number | null>(null)
   // The line this reader's list has at the top: last reported or jumped to.
   const shownLineRef = useRef<number | null>(null)
 
@@ -106,25 +103,10 @@ export function useBookReadingSession({
     updateBookProgress(book.id, newProgress)
     shownLineRef.current = index
 
+    // A line near the end cannot reach the top; the lock keeps the scroll
+    // that lands short of it from saving an earlier line over the target.
     lockScroll()
-    const scrollToLine = () => {
-      virtuosoRef.current?.scrollToIndex({ index, align: 'start' })
-    }
-    scrollToLine()
-    // A long jump scrolls by estimated heights and stops short once the lines
-    // around the target are measured; keep aiming for a few frames until they
-    // are. Aiming at a line already at the top does not move the list.
-    if (realignFrameRef.current !== null) {
-      cancelAnimationFrame(realignFrameRef.current)
-    }
-    let frames = 0
-    const realign = () => {
-      scrollToLine()
-      frames += 1
-      realignFrameRef.current =
-        frames < JUMP_REALIGN_FRAMES ? requestAnimationFrame(realign) : null
-    }
-    realignFrameRef.current = requestAnimationFrame(realign)
+    bookTextRef.current?.scrollToLine(index)
   }
   const jumpToFn = useEffectEvent(jumpTo)
 
@@ -192,14 +174,10 @@ export function useBookReadingSession({
     return watchProgress('books', bookId)
   }, [bookId, showsPosition])
 
-  // The library reuses this reader across books and virtuosoRef follows the
-  // new list, so a pending realign must not outlive the book it aims into.
+  // The library reuses this reader across books: the line shown belonged to
+  // the last one.
   useEffect(
     () => () => {
-      if (realignFrameRef.current !== null) {
-        cancelAnimationFrame(realignFrameRef.current)
-        realignFrameRef.current = null
-      }
       shownLineRef.current = null
     },
     [bookId],
@@ -215,8 +193,9 @@ export function useBookReadingSession({
     if (shownLineRef.current !== saved) jumpToFn()
   }, [bookId, showsPosition])
 
-  // The list opens at the saved line by estimated heights and can land a few
-  // lines off; aim again once the text is in, the same way a jump does.
+  // The text opens at the saved line by itself; jumping there again records
+  // it as the line shown, and the lock keeps a line near the end (which cannot
+  // reach the top) from being saved over by the line that does.
   const restoreLoadedPosition = useEffectEvent(() => {
     if (showsPosition) jumpTo()
   })
@@ -321,7 +300,7 @@ export function useBookReadingSession({
     isLoading,
     loadProgress,
     isTocCollapsed,
-    virtuosoRef,
+    bookTextRef,
     closeToc,
     toggleToc,
     jumpTo,

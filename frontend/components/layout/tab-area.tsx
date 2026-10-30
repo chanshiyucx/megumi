@@ -26,7 +26,10 @@ function TabContent({ tab, isActive, isImmersive }: TabContentProps) {
     <div
       className={cn(
         'bg-surface fixed inset-0 z-100',
-        isActive ? 'visible' : 'hidden',
+        // Not display: none, which drops the layout and makes a whole book
+        // lay out again on every switch back; content-visibility skips the
+        // rendering but keeps the layout (and scroll offsets) for the return.
+        !isActive && 'pointer-events-none invisible [content-visibility:hidden]',
         isImmersive ? 'top-0' : 'top-8',
       )}
     >

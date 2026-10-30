@@ -1,14 +1,15 @@
 import { SquareMenu, Star, StepForward, Trash2 } from 'lucide-react'
 import {
-  type RefObject,
+  memo,
+  type Ref,
   useEffect,
   useEffectEvent,
+  useImperativeHandle,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from 'react'
-import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 import { Button } from '@/components/ui/button'
 import { RemoteProgressPrompt } from '@/components/ui/remote-progress-prompt'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -20,12 +21,6 @@ import { cn } from '@/lib/style'
 import { useProgressStore } from '@/store/progress'
 import type { Chapter, JumpRequest } from '@/types/library'
 
-// Must match ReaderPadding's h-16; the favorites rail maps lines to pixels.
-const READER_PADDING_PX = 64
-const ReaderPadding = {
-  Header: () => <div className="h-16" />,
-  Footer: () => <div className="h-16" />,
-}
 // Rail offset from the right edge when scrollbars overlay the content (macOS,
 // iOS) and take no layout width. With the rail's w-3 it ends 20px in, clear of
 // the lines' pr-6 text edge.
@@ -35,9 +30,6 @@ const MARKER_LABEL_LENGTH = 40
 // cover each other, so they merge into one.
 const MARKER_SIZE_PX = 16
 
-const TOP_OVERSCAN_PX = 800
-const BOTTOM_OVERSCAN_PX = 200
-const RESIZE_ESTIMATE_DELAY_MS = 120
 const BOOK_IMAGE_LINE_PATTERN = /^\s*\[\]\(([^/\\]+)\)\s*$/
 // Caps lines at about 40 CJK characters (plus pl-4 pr-6) so wide windows keep
 // a readable measure; narrower readers just use their full width.
@@ -64,23 +56,38 @@ interface BookLineProps {
   starred?: boolean
 }
 
-function BookLine({ imageBaseUrl, line, index, starred }: BookLineProps) {
+const BookLine = memo(function BookLine({
+  imageBaseUrl,
+  line,
+  index,
+  starred,
+}: BookLineProps) {
   const imageFilename = parseBookImageFilename(line)
   const imageUrl =
     imageBaseUrl && imageFilename
       ? new URL(encodeURIComponent(imageFilename), imageBaseUrl).toString()
       : null
   const [failedImageUrl, setFailedImageUrl] = useState<string | null>(null)
+  const [loadedImageUrl, setLoadedImageUrl] = useState<string | null>(null)
 
   if (imageUrl && failedImageUrl !== imageUrl) {
     return (
-      <figure className={cn(LINE_MEASURE_CLASS, 'pr-6 pb-4 pl-4')}>
+      <figure
+        className={cn(
+          LINE_MEASURE_CLASS,
+          'pr-6 pb-4 pl-4',
+          // Hold room for the picture until it loads, so the text after it
+          // moves less when it comes in.
+          loadedImageUrl !== imageUrl && 'min-h-[50vh]',
+        )}
+      >
         <img
           src={imageUrl}
           alt={imageFilename ?? '小说插图'}
           className="mx-auto max-h-[75vh] max-w-full rounded-sm object-contain"
           loading="lazy"
           decoding="async"
+          onLoad={() => setLoadedImageUrl(imageUrl)}
           onError={() => setFailedImageUrl(imageUrl)}
         />
       </figure>
@@ -101,7 +108,7 @@ function BookLine({ imageBaseUrl, line, index, starred }: BookLineProps) {
       {line}
     </p>
   )
-}
+})
 
 interface ParagraphFavoriteButtonProps {
   x: number
@@ -147,63 +154,6 @@ function ParagraphFavoriteButton({
       {count > 1 ? `${label} ${count} 段` : label}
     </button>
   )
-}
-
-function pixelValue(value: string) {
-  const parsed = Number.parseFloat(value)
-  return Number.isFinite(parsed) ? parsed : 0
-}
-
-function estimateLineHeights(
-  lines: readonly string[],
-  paragraph: HTMLParagraphElement,
-) {
-  const style = getComputedStyle(paragraph)
-  const horizontalPadding =
-    pixelValue(style.paddingLeft) + pixelValue(style.paddingRight)
-  const verticalPadding =
-    pixelValue(style.paddingTop) + pixelValue(style.paddingBottom)
-  const contentWidth = Math.max(1, paragraph.clientWidth - horizontalPadding)
-  const fontSize = pixelValue(style.fontSize)
-  const lineHeight = pixelValue(style.lineHeight) || fontSize
-  const wrapWidth = Math.max(1, contentWidth - fontSize)
-  const letterSpacing = pixelValue(style.letterSpacing)
-  const context = document.createElement('canvas').getContext('2d')
-
-  if (context) {
-    // Not style.font: it is empty when a longhand has no shorthand form (the
-    // page's tabular-nums), and canvas silently keeps 10px sans-serif for a
-    // font string it cannot parse, such as one carrying that font-variant.
-    // Every estimate then came out a line or so short.
-    context.font = `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`
-  }
-
-  const fullWidthCharacter = context?.measureText('汉').width || fontSize
-  const asciiCharacterWidths = Array.from({ length: 128 }, (_, code) =>
-    context ? context.measureText(String.fromCharCode(code)).width : fontSize,
-  )
-
-  return lines.map((line) => {
-    if (parseBookImageFilename(line)) {
-      const estimatedImageHeight = Math.min(
-        contentWidth * 0.75,
-        window.innerHeight * 0.75,
-      )
-      return Math.ceil(estimatedImageHeight + lineHeight)
-    }
-
-    let measuredWidth = line.length * fullWidthCharacter
-    for (let index = 0; index < line.length; index += 1) {
-      const code = line.charCodeAt(index)
-      if (code < asciiCharacterWidths.length) {
-        measuredWidth += asciiCharacterWidths[code] - fullWidthCharacter
-      }
-    }
-    measuredWidth += Math.max(0, line.length - 1) * letterSpacing
-    const visualLineCount = Math.max(1, Math.ceil(measuredWidth / wrapWidth))
-
-    return Math.ceil(verticalPadding + visualLineCount * lineHeight)
-  })
 }
 
 interface FavoriteMarker {
@@ -347,17 +297,25 @@ function FavoriteRail({
   )
 }
 
-// First line whose bottom is below the top edge of the scroller. Virtuoso's
-// rangeChanged reports the rendered range, which starts TOP_OVERSCAN_PX above
-// the viewport, so progress taken from it lagged behind the reading position.
-function topVisibleLine(scroller: HTMLElement) {
-  const top = scroller.getBoundingClientRect().top
-  for (const item of scroller.querySelectorAll<HTMLElement>('[data-index]')) {
-    if (item.getBoundingClientRect().bottom > top) {
-      return Number(item.dataset.index)
+// First line whose bottom is below the top edge of the scroller. `text` holds
+// one element per line, in order, laid out top to bottom.
+function topVisibleLine(scroller: HTMLElement, text: HTMLElement) {
+  const items = text.children
+  const top = scroller.scrollTop
+  let low = 0
+  let high = items.length - 1
+  let result: number | null = null
+  while (low <= high) {
+    const mid = Math.floor((low + high) / 2)
+    const item = items[mid] as HTMLElement
+    if (item.offsetTop + item.offsetHeight > top) {
+      result = mid
+      high = mid - 1
+    } else {
+      low = mid + 1
     }
   }
-  return null
+  return result
 }
 
 function excerpt(line: string) {
@@ -367,53 +325,112 @@ function excerpt(line: string) {
     : text
 }
 
-interface VirtualBookProps {
+export interface BookTextHandle {
+  // Puts the line at the top of the reader.
+  scrollToLine: (lineIndex: number) => void
+}
+
+interface BookLinesProps {
+  imageBaseUrl: string | null
+  lines: readonly string[]
+  starredLines: ReadonlySet<number>
+}
+
+// Every line of the book, rendered at once. Kept apart from the reader's
+// selection state so a selection does not walk thousands of lines; BookLine's
+// memo then re-renders only the lines a favorite toggles.
+const BookLines = memo(function BookLines({
+  imageBaseUrl,
+  lines,
+  starredLines,
+}: BookLinesProps) {
+  return lines.map((line, index) => (
+    <BookLine
+      key={index}
+      imageBaseUrl={imageBaseUrl}
+      line={line}
+      index={index}
+      starred={starredLines.has(index)}
+    />
+  ))
+})
+
+interface BookTextProps {
+  ref: Ref<BookTextHandle>
   bookId: string
   imageBaseUrl: string | null
+  // Where the text opens, read once when it mounts.
   readInitialIndex: () => number
   lines: readonly string[]
   onTopLineChange: (lineIndex: number) => void
-  virtuosoRef: RefObject<VirtuosoHandle | null>
   starredLines: ReadonlySet<number>
   onToggleLines: (lineIndices: number[]) => void
   favoriteChapters: Chapter[]
   onJump: (lineIndex: number) => void
 }
 
-function VirtualBook({
+/**
+ * The whole book as one native scrolling list: books here are short enough
+ * (a few thousand paragraphs) to lay out at once, which keeps every position
+ * exact instead of resting on estimated line heights.
+ */
+function BookText({
+  ref,
   bookId,
   imageBaseUrl,
   readInitialIndex,
   lines,
   onTopLineChange,
-  virtuosoRef,
   starredLines,
   onToggleLines,
   favoriteChapters,
   onJump,
-}: VirtualBookProps) {
-  const probeRef = useRef<HTMLDivElement>(null)
+}: BookTextProps) {
   const contentRef = useRef<HTMLDivElement>(null)
+  const scrollerRef = useRef<HTMLDivElement>(null)
+  const textRef = useRef<HTMLDivElement>(null)
   const { selection, clear: clearSelection } = useParagraphSelection(
     contentRef,
     (lineIndex) =>
       lineIndex < lines.length && !parseBookImageFilename(lines[lineIndex]),
   )
-  const [estimation, setEstimation] = useState<{
-    heights: number[]
-    lines: readonly string[]
-    width: number
-  } | null>(null)
-  const hasCurrentEstimates = estimation?.lines === lines
   const [railRight, setRailRight] = useState(OVERLAY_SCROLLBAR_RAIL_OFFSET_PX)
-  const [scroller, setScroller] = useState<HTMLElement | null>(null)
+  // Each line's top as a share (0-100) of the scroll height, for the rail.
+  const [lineTops, setLineTops] = useState<number[] | null>(null)
+
+  const scrollToLine = (lineIndex: number) => {
+    const scroller = scrollerRef.current
+    const line = textRef.current?.children[lineIndex] as
+      | HTMLElement
+      | undefined
+    if (scroller && line) scroller.scrollTop = line.offsetTop
+  }
+  useImperativeHandle(ref, () => ({ scrollToLine }))
+
   const reportTopLine = useEffectEvent(() => {
-    if (!scroller) return
-    const lineIndex = topVisibleLine(scroller)
+    const scroller = scrollerRef.current
+    const text = textRef.current
+    if (!scroller || !text) return
+    const lineIndex = topVisibleLine(scroller, text)
     if (lineIndex !== null) onTopLineChange(lineIndex)
   })
+  const openAtSavedLine = useEffectEvent(() => {
+    scrollToLine(readInitialIndex())
+  })
+
+  useLayoutEffect(() => {
+    openAtSavedLine()
+    // Sit just left of a classic scrollbar; overlay scrollbars take no width.
+    const scroller = scrollerRef.current
+    if (!scroller) return
+    const scrollbarWidth = scroller.offsetWidth - scroller.clientWidth
+    setRailRight(
+      scrollbarWidth > 0 ? scrollbarWidth + 1 : OVERLAY_SCROLLBAR_RAIL_OFFSET_PX,
+    )
+  }, [])
 
   useEffect(() => {
+    const scroller = scrollerRef.current
     if (!scroller) return
     let frame: number | null = null
     const handleScroll = () => {
@@ -428,41 +445,40 @@ function VirtualBook({
       if (frame !== null) cancelAnimationFrame(frame)
       scroller.removeEventListener('scroll', handleScroll)
     }
-  }, [scroller])
+  }, [])
 
-  // Sit just left of a classic scrollbar; overlay scrollbars take no width.
+  // Measured from the laid-out text, again whenever it reflows (a new width,
+  // a picture loading).
   useLayoutEffect(() => {
-    const scroller = contentRef.current?.querySelector<HTMLElement>(
-      '[data-virtuoso-scroller]',
-    )
-    if (!scroller) return
-    const scrollbarWidth = scroller.offsetWidth - scroller.clientWidth
-    setRailRight(
-      scrollbarWidth > 0 ? scrollbarWidth + 1 : OVERLAY_SCROLLBAR_RAIL_OFFSET_PX,
-    )
-  }, [estimation])
-
-  // Positions use the same per-line height estimates Virtuoso scrolls by, so
-  // markers line up with the scrollbar thumb rather than with line counts.
-  const layout = useMemo(() => {
-    if (!estimation) return null
-    const offsets: number[] = []
-    let total = READER_PADDING_PX
-    for (const height of estimation.heights) {
-      offsets.push(total)
-      total += height
+    const scroller = scrollerRef.current
+    const text = textRef.current
+    if (!scroller || !text) return
+    const measure = () => {
+      const total = scroller.scrollHeight
+      // A hidden reader measures 0; keep what it had.
+      if (!total || !scroller.clientHeight) return
+      setLineTops(
+        Array.from(
+          text.children,
+          (line) => ((line as HTMLElement).offsetTop / total) * 100,
+        ),
+      )
     }
-    return { lines: estimation.lines, offsets, total: total + READER_PADDING_PX }
-  }, [estimation])
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(text)
+    return () => {
+      observer.disconnect()
+    }
+  }, [lines])
 
   const topOf = useMemo(
-    () => (lineIndex: number) =>
-      layout ? ((layout.offsets[lineIndex] ?? 0) / layout.total) * 100 : 0,
-    [layout],
+    () => (lineIndex: number) => lineTops?.[lineIndex] ?? 0,
+    [lineTops],
   )
 
   const markers = useMemo(() => {
-    if (!layout || layout.lines !== lines) return []
+    if (!lineTops) return []
 
     const result: FavoriteMarker[] = favoriteChapters.map((chapter) => ({
       key: `chapter-${chapter.lineIndex}`,
@@ -495,65 +511,19 @@ function VirtualBook({
       })
     }
     return result
-  }, [favoriteChapters, layout, lines, starredLines, topOf])
-
-  useLayoutEffect(() => {
-    const probe = probeRef.current
-    const paragraph = probe?.querySelector('p')
-    if (!probe || !paragraph) return
-
-    let lastEstimatedWidth = 0
-    let resizeTimer: ReturnType<typeof setTimeout> | undefined
-    const estimate = () => {
-      const width = paragraph.clientWidth
-      if (width <= 0 || width === lastEstimatedWidth) return
-      lastEstimatedWidth = width
-      const heights = estimateLineHeights(lines, paragraph)
-      setEstimation({ heights, lines, width })
-    }
-    const scheduleEstimate = () => {
-      clearTimeout(resizeTimer)
-      resizeTimer = setTimeout(estimate, RESIZE_ESTIMATE_DELAY_MS)
-    }
-
-    const observer = new ResizeObserver(scheduleEstimate)
-    observer.observe(probe)
-    estimate()
-
-    return () => {
-      clearTimeout(resizeTimer)
-      observer.disconnect()
-    }
-  }, [lines])
+  }, [favoriteChapters, lineTops, lines, starredLines, topOf])
 
   return (
     <div ref={contentRef} className="book-reader-content relative min-h-0 flex-1">
-      {hasCurrentEstimates ? (
-        <Virtuoso
-          key={estimation.width}
-          ref={virtuosoRef}
-          className="h-full"
-          data={lines}
-          heightEstimates={estimation.heights}
-          initialTopMostItemIndex={readInitialIndex()}
-          scrollerRef={(element) => {
-            setScroller(element instanceof HTMLElement ? element : null)
-          }}
-          itemContent={(index, line) => (
-            <BookLine
-              imageBaseUrl={imageBaseUrl}
-              line={line}
-              index={index}
-              starred={starredLines.has(index)}
-            />
-          )}
-          components={ReaderPadding}
-          increaseViewportBy={{
-            top: TOP_OVERSCAN_PX,
-            bottom: BOTTOM_OVERSCAN_PX,
-          }}
-        />
-      ) : null}
+      <div ref={scrollerRef} className="relative h-full overflow-y-auto">
+        <div ref={textRef} className="py-16">
+          <BookLines
+            imageBaseUrl={imageBaseUrl}
+            lines={lines}
+            starredLines={starredLines}
+          />
+        </div>
+      </div>
       <FavoriteRail
         bookId={bookId}
         markers={markers}
@@ -574,14 +544,6 @@ function VirtualBook({
           }}
         />
       )}
-      <div
-        aria-hidden="true"
-        className="invisible absolute inset-0 overflow-y-scroll"
-      >
-        <div ref={probeRef}>
-          <BookLine imageBaseUrl={imageBaseUrl} line="测量" />
-        </div>
-      </div>
     </div>
   )
 }
@@ -698,7 +660,7 @@ export function BookReader({
     isLoading,
     loadProgress,
     isTocCollapsed,
-    virtuosoRef,
+    bookTextRef,
     closeToc,
     toggleToc,
     jumpTo,
@@ -818,11 +780,11 @@ export function BookReader({
         </div>
       </div>
 
-      <VirtualBook
+      <BookText
         key={bookId}
         bookId={bookId}
         imageBaseUrl={imageBaseUrl}
-        virtuosoRef={virtuosoRef}
+        ref={bookTextRef}
         lines={lines}
         readInitialIndex={readPosition}
         onTopLineChange={trackTopLine}

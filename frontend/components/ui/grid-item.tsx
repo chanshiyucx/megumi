@@ -4,10 +4,10 @@ import { useTagReveal } from '@/hooks/use-tag-reveal'
 import { cn } from '@/lib/style'
 import type { ComicProgress } from '@/types/library'
 
-// Four cover columns fill a LIST_COLUMN_CLASS column on desktop; phones use
-// the full width and fit as many 128px columns as they can.
+// Cover columns fill a LIST_COLUMN_CLASS column: three on iPads, four on
+// desktop; phones use the full width and fit as many 128px columns as they can.
 export const COVER_GRID_CLASS =
-  'grid grid-cols-[repeat(auto-fill,minmax(128px,1fr))] md:grid-cols-4'
+  'grid grid-cols-[repeat(auto-fill,minmax(128px,1fr))] md:grid-cols-3 min-[87.5rem]:grid-cols-4'
 
 interface GridItemProps {
   className?: string

@@ -21,7 +21,6 @@ export function useMouseHover() {
 
 interface TagRevealOptions {
   onTap?: (press: Press) => void
-  onDoubleTap?: (press: Press) => void
   // Reveal the tag controls: on hover with a mouse, or by a long press with a
   // finger (which a press outside, or another long press, collapses). A tap
   // is left to the surface either way.
@@ -34,7 +33,6 @@ interface TagRevealOptions {
  */
 export function useTagReveal({
   onTap,
-  onDoubleTap,
   reveal = false,
 }: TagRevealOptions) {
   const ref = useRef<HTMLElement>(null)
@@ -48,7 +46,6 @@ export function useTagReveal({
 
   const press = usePressGestures({
     onTap,
-    onDoubleTap,
     onLongPress: reveal
       ? () => {
           setPressed((v) => !v)

@@ -100,8 +100,7 @@ export function ComicPanel({
       image={img}
       isSelected={currentIndex === img.index}
       revealTags
-      onClick={jumpTo}
-      onDoubleClick={setPreviewIndex}
+      onClick={setPreviewIndex}
       onTags={updateComicImageTags}
     />
   )

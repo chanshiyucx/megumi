@@ -25,7 +25,6 @@ interface GridItemProps {
   revealTags?: boolean
   loading?: 'eager' | 'lazy'
   onClick: () => void
-  onDoubleClick?: () => void
   onContextMenu?: (e: MouseEvent) => void
   onStar?: () => void
   onDelete?: () => void
@@ -43,14 +42,12 @@ export function GridItem({
   revealTags,
   loading,
   onClick,
-  onDoubleClick,
   onContextMenu,
   onStar,
   onDelete,
 }: GridItemProps) {
   const { ref, open, gestures, close } = useTagReveal({
     onTap: revealTags ? onClick : undefined,
-    onDoubleTap: () => onDoubleClick?.(),
     reveal: revealTags,
   })
 

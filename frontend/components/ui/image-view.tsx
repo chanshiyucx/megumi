@@ -19,7 +19,6 @@ interface ImageProps {
   image: Image
   onTags?: (id: string, imageKey: string, tags: FileTags) => Promise<void>
   onClick?: (index: number) => void
-  onDoubleClick?: (index: number) => void
   isSelected?: boolean
   className?: string
   loading?: 'eager' | 'lazy'
@@ -35,7 +34,6 @@ export function GridImage({
   comicId,
   image,
   onClick,
-  onDoubleClick,
   isSelected,
   className,
   onTags,
@@ -52,7 +50,6 @@ export function GridImage({
       revealTags={revealTags}
       loading={loading}
       onClick={() => onClick?.(image.index)}
-      onDoubleClick={() => onDoubleClick?.(image.index)}
       onStar={
         onTags &&
         (() => void onTags(comicId, image.path, { starred: !image.starred }))

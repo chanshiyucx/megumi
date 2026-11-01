@@ -22,7 +22,8 @@ export function createBookProgress(
     current,
     total,
     percent: total > 1 ? (current / (total - 1)) * 100 : 100,
-    currentChapterTitle: match?.title ?? '',
+    // Left out before the first chapter: the Worker refuses an empty title.
+    ...(match?.title ? { currentChapterTitle: match.title } : {}),
     lastRead: Date.now(),
   }
 }

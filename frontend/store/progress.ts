@@ -156,10 +156,16 @@ function mergePersistedProgress(
   if (!persisted || typeof persisted !== 'object') return current
 
   const state = persisted as Partial<PersistedProgressState>
+  const books = isProgressRecord(state.books) as Record<string, BookProgress>
+  // Older saves wrote '' before the first chapter, which the Worker refuses
+  // and every push would then retry.
+  for (const entry of Object.values(books)) {
+    if (entry?.currentChapterTitle === '') delete entry.currentChapterTitle
+  }
   return {
     ...current,
     comics: isProgressRecord(state.comics) as Record<string, ComicProgress>,
-    books: isProgressRecord(state.books) as Record<string, BookProgress>,
+    books,
   }
 }
 

@@ -10,6 +10,11 @@ import type { FileTags, Image } from '@/types/library'
 
 // Min horizontal travel (px) for a touch drag to count as a prev/next swipe.
 const SWIPE_THRESHOLD = 50
+// A two-finger trackpad swipe flips once its horizontal scroll adds up to
+// this; the rest of that gesture, momentum included, is ignored until no
+// scroll has come for WHEEL_IDLE_MS.
+const WHEEL_THRESHOLD = 60
+const WHEEL_IDLE_MS = 200
 // A page image that fails to load (a dropped connection) is requested again
 // after each of these delays; the thumbnail stays up meanwhile.
 const RETRY_DELAYS_MS = [1000, 3000]
@@ -206,8 +211,9 @@ function ImagePreview({
   }
 
   // A tap or click closes the preview and a double one toggles the page's
-  // star, for a finger and a mouse alike. A finger swipes to flip pages; a
-  // mouse flips with the arrow keys and shows the tag bar on hover.
+  // star, for a finger and a mouse alike. A finger or two on a trackpad swipe
+  // to flip pages; a mouse flips with the arrow keys and shows the tag bar on
+  // hover.
   const gestures = usePressGestures({
     onTap: onClose,
     onDoubleTap: (press) => {
@@ -239,6 +245,37 @@ function ImagePreview({
     window.addEventListener('keydown', handleKeyDown)
     return () => {
       window.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [])
+
+  const wheelRef = useRef({ dx: 0, flipped: false, timer: 0 })
+  const handleWheel = useEffectEvent((e: WheelEvent) => {
+    if (Math.abs(e.deltaX) <= Math.abs(e.deltaY)) return
+    // Also keeps the browser's own swipe from going back / forward in history.
+    e.preventDefault()
+    const wheel = wheelRef.current
+    clearTimeout(wheel.timer)
+    wheel.timer = window.setTimeout(() => {
+      wheel.dx = 0
+      wheel.flipped = false
+    }, WHEEL_IDLE_MS)
+    if (wheel.flipped) return
+    wheel.dx += e.deltaX
+    if (Math.abs(wheel.dx) < WHEEL_THRESHOLD) return
+    wheel.flipped = true
+    // Fingers moving left scroll right (positive deltaX): the next page, as
+    // with a finger swipe.
+    if (wheel.dx > 0) goNext()
+    else goPrev()
+  })
+
+  // Not React's onWheel: that listener is passive and cannot preventDefault.
+  useEffect(() => {
+    const wheel = wheelRef.current
+    window.addEventListener('wheel', handleWheel, { passive: false })
+    return () => {
+      window.removeEventListener('wheel', handleWheel)
+      clearTimeout(wheel.timer)
     }
   }, [])
 

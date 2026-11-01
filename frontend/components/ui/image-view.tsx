@@ -11,10 +11,13 @@ import type { FileTags, Image } from '@/types/library'
 // Min horizontal travel (px) for a touch drag to count as a prev/next swipe.
 const SWIPE_THRESHOLD = 50
 // A two-finger trackpad swipe flips once its horizontal scroll adds up to
-// this; the rest of that gesture, momentum included, is ignored until no
-// scroll has come for WHEEL_IDLE_MS.
+// this. The rest of that gesture, momentum included, is ignored until no
+// scroll has come for WHEEL_IDLE_MS, or until a new swipe starts: momentum
+// only fades, so per-event scroll that has faded to half its peak and then
+// climbs WHEEL_RISE past twice its low point is fingers swiping again.
 const WHEEL_THRESHOLD = 60
 const WHEEL_IDLE_MS = 200
+const WHEEL_RISE = 6
 // A page image that fails to load (a dropped connection) is requested again
 // after each of these delays; the thumbnail stays up meanwhile.
 const RETRY_DELAYS_MS = [1000, 3000]
@@ -248,21 +251,45 @@ function ImagePreview({
     }
   }, [])
 
-  const wheelRef = useRef({ dx: 0, flipped: false, timer: 0 })
+  const wheelRef = useRef({
+    dx: 0,
+    flipped: false,
+    peak: 0,
+    trough: 0,
+    timer: 0,
+  })
   const handleWheel = useEffectEvent((e: WheelEvent) => {
     if (Math.abs(e.deltaX) <= Math.abs(e.deltaY)) return
     // Also keeps the browser's own swipe from going back / forward in history.
     e.preventDefault()
     const wheel = wheelRef.current
+    const step = Math.abs(e.deltaX)
     clearTimeout(wheel.timer)
     wheel.timer = window.setTimeout(() => {
       wheel.dx = 0
       wheel.flipped = false
     }, WHEEL_IDLE_MS)
-    if (wheel.flipped) return
+    if (wheel.flipped) {
+      const swipingAgain =
+        wheel.trough <= wheel.peak / 2 &&
+        step >= wheel.trough * 2 + WHEEL_RISE
+      if (!swipingAgain) {
+        if (step > wheel.peak) {
+          wheel.peak = step
+          wheel.trough = step
+        } else {
+          wheel.trough = Math.min(wheel.trough, step)
+        }
+        return
+      }
+      wheel.dx = 0
+      wheel.flipped = false
+    }
     wheel.dx += e.deltaX
     if (Math.abs(wheel.dx) < WHEEL_THRESHOLD) return
     wheel.flipped = true
+    wheel.peak = step
+    wheel.trough = step
     // Fingers moving left scroll right (positive deltaX): the next page, as
     // with a finger swipe.
     if (wheel.dx > 0) goNext()

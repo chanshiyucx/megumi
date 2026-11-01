@@ -349,7 +349,6 @@ export async function fetchRemoteComicImages(
     ),
     filename: filenameFromKey(page.key),
     starred: Boolean(resolvedTags.images[page.key]?.starred),
-    deleted: Boolean(resolvedTags.images[page.key]?.deleted),
     width: page.width,
     height: page.height,
     index,

@@ -16,7 +16,6 @@ export const SHORTCUTS = {
   toggleToc: 'KeyT',
   toggleItemDeleted: 'KeyC',
   toggleItemStarred: 'KeyV',
-  toggleImageDeleted: 'KeyN',
   toggleImageStarred: 'KeyM',
 
   // Image preview navigation

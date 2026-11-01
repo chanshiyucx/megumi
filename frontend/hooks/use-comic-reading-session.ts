@@ -203,10 +203,6 @@ export function useComicReadingSession({
     )
   }
 
-  const toggleTargetImageDeleted = () => {
-    updateTargetImageTags((image) => ({ deleted: !image.deleted }))
-  }
-
   const toggleTargetImageStarred = () => {
     updateTargetImageTags((image) => ({ starred: !image.starred }))
   }
@@ -266,9 +262,6 @@ export function useComicReadingSession({
         case SHORTCUTS.toggleItemStarred:
           toggleComicStarred()
           break
-        case SHORTCUTS.toggleImageDeleted:
-          toggleTargetImageDeleted()
-          break
         case SHORTCUTS.toggleImageStarred:
           toggleTargetImageStarred()
           break
@@ -294,9 +287,6 @@ export function useComicReadingSession({
         break
       case SHORTCUTS.toggleItemStarred:
         toggleComicStarred()
-        break
-      case SHORTCUTS.toggleImageDeleted:
-        toggleTargetImageDeleted()
         break
       case SHORTCUTS.toggleImageStarred:
         toggleTargetImageStarred()

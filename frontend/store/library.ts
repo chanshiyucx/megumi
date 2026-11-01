@@ -176,7 +176,6 @@ function applyRemoteImageTags(images: Image[], catalog: RemoteCatalog) {
   for (const image of images) {
     const tags = readRemoteTags(catalog.tags, imageTagTarget(image.path))
     image.starred = Boolean(tags.starred)
-    image.deleted = Boolean(tags.deleted)
   }
 }
 

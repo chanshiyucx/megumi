@@ -14,11 +14,11 @@ interface GridItemProps {
   title: string
   cover: string
   starred: boolean
-  deleted: boolean
+  deleted?: boolean
   isSelected?: boolean
   progress?: ComicProgress
   duration?: string
-  // When set, both tag buttons and the title (centred at the bottom) show on
+  // When set, the tag buttons and the title (centred at the bottom) show on
   // mouse hover, or after a long press with a finger; a tap still runs
   // onClick. Active tags stay shown either way. Used for page thumbnails;
   // covers / TOC only show active tags.

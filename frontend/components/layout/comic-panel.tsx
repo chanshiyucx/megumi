@@ -184,7 +184,7 @@ export function ComicPanel({
           orientation="vertical"
           onCurrentIndexChange={trackStripIndex}
           onHover={setHoveredIndex}
-          onDoubleClick={setPreviewIndex}
+          onOpen={setPreviewIndex}
           onTags={updateComicImageTags}
         />
       )}

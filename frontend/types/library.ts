@@ -123,7 +123,6 @@ export interface Image {
   thumbnail: string
   filename: string
   starred: boolean
-  deleted: boolean
   width: number
   height: number
   index: number

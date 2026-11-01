@@ -6,13 +6,14 @@ interface TagOverlayProps {
   open: boolean
   title?: string
   starred: boolean
-  deleted: boolean
+  // Covers (comics, videos) only: pages carry no delete tag.
+  deleted?: boolean
   onStar?: () => void
   onDelete?: () => void
   // Collapse the reveal after a tag is toggled, so the icons fall back to
   // reflecting the image's own state.
   onClose?: () => void
-  // 'bar' overlays a top bar (delete | title | star) on a full-size page;
+  // 'bar' overlays a top bar (title | star) on a full-size page;
   // 'card' pins the icons to the top corners with the title as a bottom caption.
   layout: 'bar' | 'card'
 }
@@ -32,7 +33,7 @@ export function TagOverlay({
   open,
   title,
   starred,
-  deleted,
+  deleted = false,
   onStar,
   onDelete,
   onClose,

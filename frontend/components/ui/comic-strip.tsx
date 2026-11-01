@@ -1,14 +1,11 @@
-import { forwardRef, memo, useImperativeHandle, useState } from 'react'
+import { forwardRef, memo, useImperativeHandle } from 'react'
 import { ScrollImage } from '@/components/ui/image-view'
+import { useStarBurst } from '@/components/ui/star-burst'
 import {
   useComicStrip,
   type ComicStripOrientation,
 } from '@/hooks/use-comic-strip'
-import {
-  pressZone,
-  usePressGestures,
-  type Press,
-} from '@/hooks/use-press-gestures'
+import { usePressGestures, type Press } from '@/hooks/use-press-gestures'
 import { cn } from '@/lib/style'
 import type { FileTags, Image } from '@/types/library'
 
@@ -28,7 +25,8 @@ interface ComicStripProps {
   className?: string
   onCurrentIndexChange?: (index: number) => void
   onHover?: (index: number | null) => void
-  onDoubleClick?: (index: number) => void
+  // Opens the page in the preview: a tap or click on it.
+  onOpen?: (index: number) => void
   onTags: (id: string, imageKey: string, tags: FileTags) => Promise<void>
 }
 
@@ -41,7 +39,6 @@ interface StripPageProps {
   height: number
   // In view: its image loads ahead of the pages preloaded around it.
   inView: boolean
-  revealed: boolean
   onHover?: (index: number | null) => void
   onTags: (id: string, imageKey: string, tags: FileTags) => Promise<void>
 }
@@ -56,7 +53,6 @@ const StripPage = memo(function StripPage({
   width,
   height,
   inView,
-  revealed,
   onHover,
   onTags,
 }: StripPageProps) {
@@ -81,7 +77,6 @@ const StripPage = memo(function StripPage({
         image={image}
         className="h-full w-full"
         fetchPriority={inView ? 'high' : 'low'}
-        revealed={revealed}
         onTags={onTags}
       />
     </div>
@@ -98,14 +93,12 @@ export const ComicStrip = forwardRef<ComicStripHandle, ComicStripProps>(
       className,
       onCurrentIndexChange,
       onHover,
-      onDoubleClick,
+      onOpen,
       onTags,
     },
     ref,
   ) {
-    // Mark mode: every page in view shows its tag controls, for a finger,
-    // which cannot hover. Moving to another page leaves it.
-    const [marking, setMarking] = useState(false)
+    const starBurst = useStarBurst()
     const {
       containerRef,
       currentIndex,
@@ -118,10 +111,7 @@ export const ComicStrip = forwardRef<ComicStripHandle, ComicStripProps>(
       images,
       initialIndex,
       orientation,
-      onCurrentIndexChange: (index) => {
-        setMarking(false)
-        onCurrentIndexChange?.(index)
-      },
+      onCurrentIndexChange,
     })
 
     useImperativeHandle(ref, () => ({ currentIndex, jumpTo, step }), [
@@ -130,31 +120,27 @@ export const ComicStrip = forwardRef<ComicStripHandle, ComicStripProps>(
       step,
     ])
 
-    // A finger taps the first / last third of the strip (along its reading
-    // axis) to step a page at once, and the middle for mark mode; a double
-    // tap there opens the page in the preview. A mouse shows a page's tags on
-    // hover, steps with the arrow keys and double-clicks to preview.
-    const zoneOf = (press: Press) => {
-      const container = containerRef.current
-      return container
-        ? pressZone(container.getBoundingClientRect(), press, orientation)
-        : 0
+    // A tap or click opens a page in the preview and a double one toggles its
+    // star, for a finger and a mouse alike. A mouse also shows a page's tags
+    // on hover and steps with the arrow keys.
+    const pageOf = (press: Press) => {
+      const page =
+        press.target instanceof Element
+          ? press.target.closest<HTMLElement>('[data-page-index]')
+          : null
+      return page ? images[Number(page.dataset.pageIndex)] : undefined
     }
     const gestures = usePressGestures({
-      canDoubleTap: (press) =>
-        press.pointerType !== 'touch' || zoneOf(press) === 0,
       onTap: (press) => {
-        if (press.pointerType !== 'touch') return
-        const zone = zoneOf(press)
-        if (zone === 0) setMarking((v) => !v)
-        else step(zone)
+        const image = pageOf(press)
+        if (image) onOpen?.(image.index)
       },
       onDoubleTap: (press) => {
-        const page =
-          press.target instanceof Element
-            ? press.target.closest<HTMLElement>('[data-page-index]')
-            : null
-        if (page) onDoubleClick?.(Number(page.dataset.pageIndex))
+        const image = pageOf(press)
+        if (!image) return
+        const starred = !image.starred
+        void onTags(comicId, image.path, { starred })
+        starBurst.show(press.x, press.y, starred)
       },
     })
 
@@ -201,13 +187,13 @@ export const ComicStrip = forwardRef<ComicStripHandle, ComicStripProps>(
                       page.index >= visibleRange.inViewStart &&
                       page.index <= visibleRange.inViewEnd
                     }
-                    revealed={marking}
                     onHover={onHover}
                     onTags={onTags}
                   />
                 )
               })}
         </div>
+        {starBurst.node}
       </div>
     )
   },

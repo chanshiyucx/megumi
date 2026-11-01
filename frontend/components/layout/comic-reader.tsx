@@ -255,7 +255,7 @@ export function ComicReader({ comicId }: ComicReaderProps) {
           orientation={isPhone ? 'vertical' : 'horizontal'}
           onCurrentIndexChange={trackStripIndex}
           onHover={setHoveredIndex}
-          onDoubleClick={setPreviewIndex}
+          onOpen={setPreviewIndex}
           onTags={updateComicImageTags}
         />
       </div>

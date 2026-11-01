@@ -1,12 +1,9 @@
 import { useEffect, useEffectEvent, useRef, useState } from 'react'
 import { GridItem } from '@/components/ui/grid-item'
+import { useStarBurst } from '@/components/ui/star-burst'
 import { TagOverlay } from '@/components/ui/tag-overlay'
 import { useImageTags } from '@/hooks/use-image-tags'
-import {
-  pressZone,
-  usePressGestures,
-  type Press,
-} from '@/hooks/use-press-gestures'
+import { usePressGestures } from '@/hooks/use-press-gestures'
 import { SHORTCUTS } from '@/lib/shortcuts'
 import { cn } from '@/lib/style'
 import type { FileTags, Image } from '@/types/library'
@@ -27,12 +24,10 @@ interface ImageProps {
   className?: string
   loading?: 'eager' | 'lazy'
   fetchPriority?: 'high' | 'low' | 'auto'
-  // Shows the tag controls: the reader's mark mode (full-size pages).
-  revealed?: boolean
 }
 
 interface GridImageProps extends ImageProps {
-  // Hover / long press reveals the tag buttons and filename (page grid).
+  // Hover / long press reveals the star button and filename (page grid).
   revealTags?: boolean
 }
 
@@ -53,7 +48,6 @@ export function GridImage({
       title={image.filename}
       cover={image.thumbnail}
       starred={image.starred}
-      deleted={image.deleted}
       isSelected={isSelected}
       revealTags={revealTags}
       loading={loading}
@@ -62,10 +56,6 @@ export function GridImage({
       onStar={
         onTags &&
         (() => void onTags(comicId, image.path, { starred: !image.starred }))
-      }
-      onDelete={
-        onTags &&
-        (() => void onTags(comicId, image.path, { deleted: !image.deleted }))
       }
     />
   )
@@ -103,10 +93,7 @@ function ProgressiveImage({
     <>
       <div
         aria-hidden="true"
-        className={cn(
-          'bg-overlay absolute inset-0 bg-cover bg-center bg-no-repeat',
-          image.deleted && 'grayscale',
-        )}
+        className="bg-overlay absolute inset-0 bg-cover bg-center bg-no-repeat"
         style={{ backgroundImage: `url("${image.thumbnail}")` }}
       />
       <img
@@ -131,20 +118,14 @@ function ProgressiveImage({
         className={cn(
           'absolute inset-0 block h-full w-full object-contain transition-opacity duration-100 [-webkit-touch-callout:default]',
           isFullLoaded ? 'opacity-100' : 'opacity-0',
-          image.deleted && 'grayscale',
         )}
       />
     </>
   )
 }
 
-function SingleImage({ comicId, image, onTags, revealed }: ImageProps) {
-  const { hoverProps, controls } = useImageTags(
-    comicId,
-    image,
-    onTags,
-    revealed,
-  )
+function SingleImage({ comicId, image, onTags }: ImageProps) {
+  const { hoverProps, controls } = useImageTags(comicId, image, onTags)
 
   return (
     <figure className="flex h-full w-full items-center justify-center">
@@ -160,10 +141,7 @@ function SingleImage({ comicId, image, onTags, revealed }: ImageProps) {
           src={image.url}
           alt={image.filename}
           decoding="async"
-          className={cn(
-            'block h-full w-full object-contain [-webkit-touch-callout:default]',
-            image.deleted && 'grayscale',
-          )}
+          className="block h-full w-full object-contain [-webkit-touch-callout:default]"
         />
         <TagOverlay layout="bar" {...controls} />
       </div>
@@ -175,17 +153,11 @@ export function ScrollImage({
   comicId,
   image,
   onTags,
-  revealed,
   className = 'h-full',
   loading = 'eager',
   fetchPriority,
 }: ImageProps) {
-  const { hoverProps, controls } = useImageTags(
-    comicId,
-    image,
-    onTags,
-    revealed,
-  )
+  const { hoverProps, controls } = useImageTags(comicId, image, onTags)
 
   return (
     <figure
@@ -205,10 +177,13 @@ export function ScrollImage({
   )
 }
 
-interface ImagePreviewProps extends Omit<ImageProps, 'image' | 'onClick'> {
+interface ImagePreviewProps {
+  comicId: string
   images: Image[]
   index: number
   onIndexChange: (index: number) => void
+  onClose: () => void
+  onTags: (id: string, imageKey: string, tags: FileTags) => Promise<void>
 }
 
 function ImagePreview({
@@ -217,46 +192,32 @@ function ImagePreview({
   index,
   onIndexChange,
   onTags,
-  onDoubleClick,
+  onClose,
 }: ImagePreviewProps) {
   const currentImage = images[index]
-  const containerRef = useRef<HTMLDivElement>(null)
   const touchStartRef = useRef<{ x: number; y: number } | null>(null)
-  // The tag bar a finger opened; every page flip closes it.
-  const [revealed, setRevealed] = useState(false)
+  const starBurst = useStarBurst()
 
   const goPrev = () => {
     if (index <= 0) return
-    setRevealed(false)
     onIndexChange(index - 1)
   }
   const goNext = () => {
     if (index >= images.length - 1) return
-    setRevealed(false)
     onIndexChange(index + 1)
   }
 
-  // A finger taps the left / right third to flip pages at once and the middle
-  // to show the tag bar; a double tap there closes the preview. A mouse
-  // flips with the arrow keys, shows the bar on hover and double-clicks to
-  // close.
-  const zoneOf = (press: Press) => {
-    const container = containerRef.current
-    return container
-      ? pressZone(container.getBoundingClientRect(), press, 'horizontal')
-      : 0
-  }
+  // A tap or click closes the preview and a double one toggles the page's
+  // star, for a finger and a mouse alike. A finger swipes to flip pages; a
+  // mouse flips with the arrow keys and shows the tag bar on hover.
   const gestures = usePressGestures({
-    canDoubleTap: (press) =>
-      press.pointerType !== 'touch' || zoneOf(press) === 0,
-    onTap: (press) => {
-      if (press.pointerType !== 'touch') return
-      const zone = zoneOf(press)
-      if (zone < 0) goPrev()
-      else if (zone > 0) goNext()
-      else setRevealed((v) => !v)
+    onTap: onClose,
+    onDoubleTap: (press) => {
+      if (!currentImage) return
+      const starred = !currentImage.starred
+      void onTags(comicId, currentImage.path, { starred })
+      starBurst.show(press.x, press.y, starred)
     },
-    onDoubleTap: () => onDoubleClick?.(index),
   })
 
   const handleKeyDown = useEffectEvent((e: KeyboardEvent) => {
@@ -271,7 +232,7 @@ function ImagePreview({
         goNext()
         break
       case SHORTCUTS.closePreview:
-        onDoubleClick?.(index)
+        onClose()
         break
     }
   })
@@ -300,7 +261,7 @@ function ImagePreview({
   }, [index, images])
 
   // Mobile has no arrow keys: a horizontal swipe flips pages. Ignore mostly
-  // vertical drags so they don't fight the double-tap-to-close gesture.
+  // vertical drags.
   const handleTouchStart = (e: React.TouchEvent) => {
     const t = e.touches[0]
     touchStartRef.current = { x: t.clientX, y: t.clientY }
@@ -323,7 +284,6 @@ function ImagePreview({
 
   return (
     <div
-      ref={containerRef}
       className="relative flex h-full w-full touch-manipulation flex-col"
       onTouchStart={handleTouchStart}
       onTouchEnd={handleTouchEnd}
@@ -335,8 +295,8 @@ function ImagePreview({
         comicId={comicId}
         image={currentImage}
         onTags={onTags}
-        revealed={revealed}
       />
+      {starBurst.node}
     </div>
   )
 }
@@ -348,7 +308,7 @@ interface ImagePreviewOverlayProps {
   // Index of the previewed page; < 0 keeps the overlay closed.
   index: number
   onIndexChange: (index: number) => void
-  // Double-tap / double-click anywhere closes the overlay.
+  // A tap or click anywhere (or Escape) closes the overlay.
   onClose: () => void
   onTags: (id: string, imageKey: string, tags: FileTags) => Promise<void>
 }
@@ -378,7 +338,7 @@ export function ImagePreviewOverlay({
         index={index}
         onIndexChange={onIndexChange}
         onTags={onTags}
-        onDoubleClick={onClose}
+        onClose={onClose}
       />
     </div>
   )

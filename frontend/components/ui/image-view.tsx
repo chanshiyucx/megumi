@@ -125,21 +125,22 @@ function SingleImage({ comicId, image, onTags }: ImageProps) {
   const { hoverProps, controls } = useImageTags(comicId, image, onTags)
 
   return (
-    <figure className="flex h-full w-full items-center justify-center">
+    <figure
+      className="flex h-full w-full items-center justify-center"
+      style={{ containerType: 'size' }}
+    >
       <div
         {...hoverProps}
-        className="group relative max-h-full max-w-full"
+        className="group relative"
+        // The page's fitted box, sized before either image loads so the
+        // thumbnail and the full image stack in it and the tag bar sits on
+        // the page's top edge.
         style={{
           aspectRatio: `${image.width} / ${image.height}`,
+          width: `min(100cqw, calc(100cqh * ${image.width / image.height}))`,
         }}
       >
-        <img
-          key={image.url}
-          src={image.url}
-          alt={image.filename}
-          decoding="async"
-          className="block h-full w-full object-contain [-webkit-touch-callout:default]"
-        />
+        <ProgressiveImage image={image} fetchPriority="high" />
         <TagOverlay layout="bar" {...controls} />
       </div>
     </figure>
@@ -243,17 +244,17 @@ function ImagePreview({
 
   // Warm the HTTP cache for the pages around this one so left/right
   // navigation paints instantly instead of fetching on keypress; reading
-  // goes forward, so two ahead and one back.
+  // goes forward, so two ahead and one back. Thumbnails go first: they are
+  // what a flip shows until the full image is in.
   useEffect(() => {
     if (index < 0) return
-    for (const neighbor of [
-      images[index + 1],
-      images[index + 2],
-      images[index - 1],
-    ]) {
-      if (!neighbor) continue
-      const img = new window.Image()
-      img.src = neighbor.url
+    const neighbors = [images[index + 1], images[index + 2], images[index - 1]]
+    for (const key of ['thumbnail', 'url'] as const) {
+      for (const neighbor of neighbors) {
+        if (!neighbor) continue
+        const img = new window.Image()
+        img.src = neighbor[key]
+      }
     }
   }, [index, images])
 
